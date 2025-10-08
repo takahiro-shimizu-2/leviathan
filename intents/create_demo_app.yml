@@ -1,0 +1,18 @@
+version: v0
+intent_id: create_demo_app
+description: "モックデータ付きの簡易デモUIを生成"
+agent_requirements: []
+inputs:
+  - name: query
+    type: string
+steps: []
+outputs:
+  - path: "runs/{run_id}/demo/index.html"
+success_criteria:
+  - "demo/index.html が生成される"
+  - "同ディレクトリに style.css と app.js が存在する"
+  - "index.html に id=\"app\" の要素がある"
+  - "モックデータが画面に表示され、検索/追加が動作する（最小動作）"
+timeout_s: 60
+safety:
+  allowed_ops: []

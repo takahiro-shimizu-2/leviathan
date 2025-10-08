@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import sys
+import json
+
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+from agi_poc.intent import detect_intent  # type: ignore
+from agi_poc.registry import yaml_registry  # type: ignore
+from agi_poc.schemas import validate_task_yaml, normalize_task_yaml  # type: ignore
+from agi_poc.util import project_root  # type: ignore
+
+
+def _project_root() -> str:
+    return project_root(os.path.dirname(__file__))
+
+
+def _ensure_dir(p: str) -> None:
+    os.makedirs(p, exist_ok=True)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description='Intent Orchestrator CLI')
+    ap.add_argument('--user_input', required=True)
+    ap.add_argument('--run_id', required=True)
+    args = ap.parse_args()
+
+    root = _project_root()
+    intent_id = detect_intent(args.user_input)
+    path, spec = yaml_registry.find_or_generate(intent_id)
+
+    spec = normalize_task_yaml(spec)
+    ok, msg = validate_task_yaml(spec)
+    if not ok:
+        print(f"Invalid intent YAML: {msg}", file=sys.stderr)
+        return 2
+
+    # Persist normalized snapshot under runs/<run_id>/intent.yml
+    run_dir = os.path.join(root, 'runs', args.run_id)
+    _ensure_dir(run_dir)
+    with open(os.path.join(run_dir, 'intent.yml'), 'w', encoding='utf-8') as f:
+        json.dump(spec, f, ensure_ascii=False, indent=2)
+
+    # Print normalized intent id and original path
+    rel = os.path.relpath(path, root)
+    print(f"intent_id={intent_id} path={rel}")
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
+

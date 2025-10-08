@@ -1,0 +1,30 @@
+# Agent Blueprint Template (テンプレート)
+intent_id: create_agent_for_<source_intent_id>
+version: 0.1.0
+description: "Intent '<source_intent_id>' に適合するエージェントを生成するBlueprint"
+target_agent:
+  agent_id: agent_<source_intent_id>
+  capabilities: [<capability_1>, <capability_2>]
+  tools: [filesystem:read, filesystem:write]
+  entry_type: cli
+inputs_contract:
+  args: [--yaml, --input, --run_id]
+execution_contract:
+  timeout_sec: 300
+  success_criteria:
+    - "<artifact_path> が生成される"
+    - "生成物がIntentのsuccess_criteriaに整合する"
+scaffold:
+  language: python
+  template: templates/agent/python_cli
+  files:
+    - agents/agent_<source_intent_id>/main.py
+    - agents/agent_<source_intent_id>/agent.yml
+validation:
+  smoke:
+    - "agent_cli --yaml intents/<source_intent_id>.yml --input 'テスト' --run_id test"
+  dry_run_ok: true
+registration:
+  version: 0.1.0
+  tags: [<capability_1>, <capability_2>]
+

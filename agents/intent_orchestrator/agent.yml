@@ -1,0 +1,21 @@
+agent_id: intent_orchestrator
+version: 0.1.0
+description: "ユーザー入力からインテントを検出し、Intent YAMLを探索/生成/正規化するオーケストレーター"
+capabilities:
+  - intent_detection
+  - yaml_scan
+  - yaml_normalize
+  - validator
+supported_tools:
+  - filesystem:read
+  - filesystem:write
+limits:
+  timeout_sec: 180
+entry:
+  type: cli
+  command: intent_orchestrator_cli
+  args:
+    - "--user_input"
+    - "{input}"
+    - "--run_id"
+    - "{run_id}"

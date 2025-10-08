@@ -1,0 +1,297 @@
+version: 0.1
+system: MVP_Factory
+display_name: "YAML Auto-Generator"
+description: "未定義タスク要求時に既存YAMLをテンプレートとして新たなYAMLを生成"
+language: "ja-JP"
+
+inputs:
+  - user_request
+  - template_sources
+  - current_manifests
+
+template_sources:
+  search_paths:
+    - "registry/manifest.yaml"
+    - "registry/manifest_langstack.yaml"
+    - "templates"
+  include_globs:
+    - "*.yaml"
+    - "*.yml"
+  exclude_globs:
+    - "*generated*"
+
+runtime:
+  parser:
+    type: yaml_min
+    constraints:
+      block_lists_only: true
+      no_inline_json: true
+  policies:
+    id_naming:
+      case: snake_case
+      collision_strategy: rename_with_suffix
+      suffix_format: "_ext_{seq}"
+    merge:
+      mode: additive
+      allow_override: false
+    compatibility:
+      require_parser_safe: true
+      forbid_empty_next: true
+
+workflow:
+  nodes:
+    - id: intake
+      type: agent
+      purpose: "リクエストから必要タスク/要素を抽出"
+      outputs:
+        - required_tasks
+        - required_agents
+        - required_artifacts
+      next:
+        - catalog
+
+    - id: catalog
+      type: agent
+      purpose: "既存YAMLを読み込み、既知のタスク/ノード/エージェントをカタログ化"
+      inputs:
+        - current_manifests
+        - template_sources
+      outputs:
+        - task_index
+        - agent_index
+        - artifact_index
+      next:
+        - gap_detector
+
+    - id: gap_detector
+      type: agent
+      purpose: "要求とカタログの差分を検出"
+      inputs:
+        - required_tasks
+        - task_index
+        - agent_index
+        - artifact_index
+      outputs:
+        - missing_tasks
+        - missing_agents
+        - missing_artifacts
+      conditional_edges:
+        - condition: "no_gap"
+          target: no_action
+        - condition: "has_gap"
+          target: template_selector
+
+    - id: template_selector
+      type: agent
+      purpose: "テンプレートYAMLから最も近い雛形をランキング選択"
+      inputs:
+        - missing_tasks
+        - template_sources
+      outputs:
+        - selected_templates
+        - mapping_hints
+      next:
+        - yaml_synthesizer
+
+    - id: yaml_synthesizer
+      type: agent
+      purpose: "テンプレートを組み合わせ、新YAMLを構成（ID重複解消/参照整合）"
+      inputs:
+        - selected_templates
+        - mapping_hints
+        - missing_tasks
+        - missing_agents
+        - missing_artifacts
+      outputs:
+        - generated_yaml
+        - diff_summary
+        - alias_map
+      next:
+        - validator
+
+    - id: validator
+      type: agent
+      purpose: "構文/参照/パーサ互換/ID重複の検証"
+      inputs:
+        - generated_yaml
+      outputs:
+        - compat_report
+        - validation_passed
+      conditional_edges:
+        - condition: "valid"
+          target: human_review
+        - condition: "invalid"
+          target: yaml_refine
+
+    - id: yaml_refine
+      type: agent
+      purpose: "検証エラーの是正（配列表記やID名寄せ）"
+      inputs:
+        - generated_yaml
+        - compat_report
+      outputs:
+        - refined_yaml
+      next:
+        - validator
+
+    - id: human_review
+      type: agent
+      purpose: "ヒトによる承認ゲート（差分/影響範囲の確認）"
+      inputs:
+        - diff_summary
+        - compat_report
+      outputs:
+        - approval
+      conditional_edges:
+        - condition: "approved"
+          target: writer
+        - condition: "changes_requested"
+          target: yaml_refine
+
+    - id: writer
+      type: agent
+      purpose: "レジストリへ生成YAMLを書き込み、インデックス更新"
+      inputs:
+        - generated_yaml
+        - alias_map
+      outputs:
+        - generated_manifest_path
+        - registry_update_log
+      next:
+        - end
+
+    - id: no_action
+      type: agent
+      purpose: "差分無し。既存YAMLの参照提案のみ生成"
+      outputs:
+        - advisory_note
+      next:
+        - end
+
+    - id: end
+      type: terminal
+
+agents:
+  - name: request_intent_extractor
+    role: "Intake"
+    goal: "必要タスク・エージェント・成果物の抽出"
+    tools:
+      - ner
+      - task_phrase_miner
+
+  - name: manifest_loader
+    role: "Catalog"
+    goal: "テンプレート群からインデックスを構築"
+    tools:
+      - yaml_loader
+      - index_builder
+
+  - name: gap_analyzer
+    role: "GapDetector"
+    goal: "要求とカタログの差分を列挙"
+    tools:
+      - set_diff
+      - semantic_matcher
+
+  - name: template_ranker
+    role: "TemplateSelector"
+    goal: "適合度の高いテンプレートを選定"
+    tools:
+      - lexical_similarity
+      - jaccard_index
+
+  - name: yaml_composer
+    role: "Synthesizer"
+    goal: "テンプレートを合成し新YAMLを構築"
+    tools:
+      - id_deduper
+      - reference_rewriter
+      - block_list_normalizer
+
+  - name: yaml_checker
+    role: "Validator"
+    goal: "構文・参照・互換性の検証"
+    tools:
+      - yaml_min_validator
+      - id_uniqueness_checker
+      - reference_checker
+
+  - name: yaml_writer
+    role: "Writer"
+    goal: "ファイル保存とカタログ更新"
+    tools:
+      - file_writer
+      - registry_indexer
+
+tools:
+  - name: yaml_loader
+    type: internal
+    implementation: src.yaml_min.load
+
+  - name: yaml_min_validator
+    type: internal
+    implementation: src.yaml_min.load
+
+  - name: id_deduper
+    type: builtin
+    implementation: util.id_deduper
+
+  - name: reference_rewriter
+    type: builtin
+    implementation: util.ref_rewriter
+
+  - name: block_list_normalizer
+    type: builtin
+    implementation: util.block_list_normalizer
+
+  - name: file_writer
+    type: io
+    implementation: util.file_writer
+    config:
+      output_dir: "registry/generated"
+      filename_pattern: "{date}-{slug}.yaml"
+
+  - name: registry_indexer
+    type: io
+    implementation: util.registry_indexer
+
+  - name: lexical_similarity
+    type: builtin
+    implementation: util.lexical_similarity
+
+  - name: jaccard_index
+    type: builtin
+    implementation: util.jaccard_index
+
+  - name: set_diff
+    type: builtin
+    implementation: util.set_diff
+
+  - name: task_phrase_miner
+    type: builtin
+    implementation: util.task_phrase_miner
+
+  - name: ner
+    type: builtin
+    implementation: util.simple_ner
+
+human_in_the_loop:
+  approvals:
+    - at: human_review
+      approvers:
+        - "Tech Lead"
+        - "Product Owner"
+  guidelines:
+    - "差分は最小に保つ（既存を壊さない）"
+    - "IDはsnake_caseで一意"
+    - "配列は必ずブロック表記"
+    - "外部依存はオプション化しオフライン代替を併記"
+
+outputs:
+  - generated_manifest_path
+  - diff_summary
+  - alias_map
+  - compat_report
+  - registry_update_log
+  - advisory_note
+

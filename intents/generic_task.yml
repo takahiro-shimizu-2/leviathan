@@ -1,0 +1,17 @@
+version: v0
+intent_id: generic_task
+description: 汎用タスク（テンプレート）
+agent_requirements: []
+inputs:
+  -
+    name: query
+    type: string
+steps: []
+outputs:
+  -
+    path: runs/{run_id}/output.txt
+success_criteria:
+  - 出力が生成される
+timeout_s: 60
+safety:
+  allowed_ops: []

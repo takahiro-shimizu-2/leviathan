@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import sys
+import json
+
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+from agi_poc.util import project_root  # type: ignore
+from agi_poc.runner import evaluate_success  # type: ignore
+
+
+def _project_root() -> str:
+    return project_root(os.path.dirname(__file__))
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description='Validation Orchestrator CLI')
+    ap.add_argument('--run_id', required=True)
+    args = ap.parse_args()
+
+    root = _project_root()
+    run_dir = os.path.join(root, 'runs', args.run_id)
+    intent_json = os.path.join(run_dir, 'intent.yml')
+
+    if not os.path.exists(intent_json):
+        print('Missing runs/<run_id>/intent.yml. Run previous phases first.', file=sys.stderr)
+        return 2
+
+    try:
+        with open(intent_json, 'r', encoding='utf-8') as f:
+            intent_spec = json.load(f)
+    except Exception as e:
+        print(f'Failed to load intent spec: {e}', file=sys.stderr)
+        return 3
+
+    ok = False
+    detail = {}
+    try:
+        ok = evaluate_success(intent_spec, args.run_id)
+        detail = {"method": "evaluate_success", "notes": "sections/tables/rows presence checks"}
+    except Exception as e:
+        ok = False
+        detail = {"error": str(e)}
+
+    result = {
+        "approved": bool(ok),
+        "checks": [
+            {"name": "spec_quality", "ok": bool(ok), "detail": detail},
+        ],
+    }
+
+    out_path = os.path.join(run_dir, 'validation.json')
+    with open(out_path, 'w', encoding='utf-8') as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+
+    print(f"approved={result['approved']}")
+    return 0 if ok else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
+

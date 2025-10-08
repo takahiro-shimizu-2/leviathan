@@ -1,0 +1,387 @@
+version: 0.1
+system: MVP_Factory
+display_name: "MVP Factory (LangChain x LangSmith x CrewAI)"
+description: "LangGraph構造でCrewAIエージェントをLangChainツールとLangSmith計測で駆動するコード指向マニフェスト"
+language: "ja-JP"
+
+# 実行時の統合設定（LangChain / LangSmith / CrewAI）
+runtime:
+  llm_defaults:
+    provider: google
+    model: gemini-2.5-pro
+    temperature: 0.3
+    max_tokens: 4096
+  langchain:
+    agent_strategy:
+      type: STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION
+      max_iterations: 15
+      early_stopping_method: generate
+      handle_parsing_errors: true
+    memory:
+      type: conversation_buffer
+      k: 50
+  langsmith:
+    tracing_v2: true
+    project: MVP_Factory
+    endpoint: https://api.smith.langchain.com
+    env:
+      LANGCHAIN_TRACING_V2: "true"
+      LANGCHAIN_PROJECT: MVP_Factory
+      LANGCHAIN_ENDPOINT: https://api.smith.langchain.com
+      # LANGCHAIN_API_KEY は実行環境に設定
+  crewai:
+    process:
+      supreme: hierarchical
+      execution: parallel
+    memory: true
+    embedder:
+      provider: openai
+      model: text-embedding-3-small
+
+# LangGraphにマッピング可能なワークフロー表現
+workflow:
+  nodes:
+    - id: supreme_orchestrator
+      type: supervisor
+      conditional_edges:
+        - condition: ready_for_intent
+          target: intent_orchestrator
+        - condition: needs_clarification
+          target: user_clarify
+        - condition: needs_yaml
+          target: yaml_autogen
+        - condition: ready_for_execution
+          target: planning_orchestrator
+        - condition: abort
+          target: end
+
+    - id: intent_orchestrator
+      type: agent
+      purpose: "インテント検出→Intent YAMLの探索/生成/正規化"
+      outputs:
+        - intent_spec
+        - agent_requirements
+        - missing_info
+      conditional_edges:
+        - condition: missing
+          target: user_clarify
+        - condition: not_found
+          target: yaml_autogen
+        - condition: ok
+          target: planning_orchestrator
+
+    - id: user_clarify
+      type: agent
+      purpose: "不足要件のヒアリングと再構造化"
+      next:
+        - intent_orchestrator
+
+    - id: yaml_autogen
+      type: agent
+      purpose: "テンプレ/既存YAMLから不足のIntent/Agent YAMLを合成生成し検証"
+      next:
+        - intent_orchestrator
+
+    - id: planning_orchestrator
+      type: agent
+      purpose: "エージェント選定/生成と実行計画の構築（最小縦切り）"
+      outputs:
+        - execution_plan
+        - agent_specs
+      next:
+        - execution_orchestrator
+
+    - id: execution_orchestrator
+      type: parallel_crew
+      agents:
+        - architect
+        - tech_lead
+        - coder_frontend
+        - coder_backend
+        - tester
+        - devops
+      merge_strategy: wait_all
+      next:
+        - validation_orchestrator
+
+    - id: validation_orchestrator
+      type: agent
+      purpose: "成果物の自動検証とゲート判定（lint/test/coverage/受入条件）"
+      conditional_edges:
+        - condition: approved
+          target: review
+        - condition: changes_requested
+          target: execution_orchestrator
+
+    - id: review
+      type: agent
+      purpose: "ヒト承認ゲート（コードレビュー/合意）"
+      conditional_edges:
+        - condition: approved
+          target: deploy_demo
+        - condition: changes_requested
+          target: execution_orchestrator
+
+    - id: deploy_demo
+      type: agent
+      purpose: "デモ環境への簡易デプロイ（dry-run可）"
+      next:
+        - end
+
+    - id: end
+      type: terminal
+
+# CrewAI定義（役割/目標/ツール/LLM設定）
+crews:
+  - id: supreme
+    process: hierarchical
+    manager: supreme_manager
+    agents:
+      - supreme_manager
+
+  - id: execution
+    process: parallel
+    agents:
+      - architect
+      - tech_lead
+      - coder_frontend
+      - coder_backend
+      - tester
+      - devops
+
+agents:
+  - name: supreme_manager
+    role: "Supreme Orchestrator"
+    goal: "要求明確化、作業分解、優先度付け、ゲート管理、意思決定"
+    backstory: |
+      多数のMVP開発を率いたマネージャ。価値検証を最短で回す。
+    tools:
+      - spec_extractor
+      - tool_chain_runner
+      - issue_manager
+    llm_config:
+      provider: google
+      model: gemini-2.5-pro
+      temperature: 0.2
+
+  - name: architect
+    role: "Solution Architect"
+    goal: "ドメイン要件に適した堅牢なアーキテクチャを設計"
+    backstory: "スケーラビリティとメンテナビリティ重視のアーキテクト"
+    tools:
+      - tech_stack_analyzer
+      - diagram_generator
+      - repo_manager
+    llm_config:
+      provider: google
+      model: gemini-2.5-pro
+      temperature: 0.3
+
+  - name: tech_lead
+    role: "Tech Lead"
+    goal: "技術選定・標準・テンプレの確立とガイドの提示"
+    backstory: "TypeScript/Python/Rustに精通、品質と速度の両立を主導"
+    tools:
+      - scaffold_generator
+      - linter
+      - formatter
+    llm_config:
+      provider: google
+      model: gemini-2.5-pro
+      temperature: 0.4
+
+  - name: coder_frontend
+    role: "Frontend Developer"
+    goal: "UI/UXとフロント機能を迅速に実装"
+    backstory: "React/Next.jsの実装とテストに強い"
+    tools:
+      - code_generator
+      - test_writer
+      - web_search
+    llm_config:
+      provider: google
+      model: gemini-2.5-pro
+      temperature: 0.6
+
+  - name: coder_backend
+    role: "Backend Developer"
+    goal: "API/DB/ドメインロジックを実装し統合"
+    backstory: "FastAPI/Prisma/SQLの設計・実装を得意とする"
+    tools:
+      - code_generator
+      - db_designer
+      - api_spec_builder
+    llm_config:
+      provider: google
+      model: gemini-2.5-pro
+      temperature: 0.6
+
+  - name: tester
+    role: "QA Engineer"
+    goal: "自動テスト・検査・検証基盤の整備"
+    backstory: "静的解析とテスト駆動で品質を担保"
+    tools:
+      - test_runner
+      - coverage_reporter
+      - qa_checklist
+    llm_config:
+      provider: google
+      model: gemini-2.5-pro
+      temperature: 0.2
+
+  - name: devops
+    role: "DevOps Engineer"
+    goal: "CI/CDとデモ環境の整備、再現可能なビルド"
+    backstory: "軽量で堅牢なパイプラインを好む"
+    tools:
+      - container_builder
+      - deployer
+      - secrets_manager
+    llm_config:
+      provider: google
+      model: gemini-2.5-pro
+      temperature: 0.3
+
+# LangChainツールレジストリ（実装はコード側で読み込み）
+tools:
+  - name: code_generator
+    type: langchain_tool
+    implementation: src.tools.code.CodeGeneratorTool
+    config:
+      output_dir: "./generated"
+      languages:
+        - python
+        - typescript
+        - rust
+
+  - name: scaffold_generator
+    type: langchain_tool
+    implementation: src.tools.scaffold.ScaffoldGenerator
+    config:
+      templates_dir: ./templates
+
+  - name: test_writer
+    type: langchain_tool
+    implementation: src.tools.testing.TestWriter
+
+  - name: test_runner
+    type: langchain_tool
+    implementation: src.tools.testing.TestRunner
+
+  - name: coverage_reporter
+    type: langchain_tool
+    implementation: src.tools.testing.CoverageReporter
+
+  - name: linter
+    type: langchain_tool
+    implementation: src.tools.quality.Linter
+
+  - name: formatter
+    type: langchain_tool
+    implementation: src.tools.quality.Formatter
+
+  - name: web_search
+    type: langchain_community
+    provider: tavily
+    api_key_env: TAVILY_API_KEY
+
+  - name: repo_manager
+    type: langchain_tool
+    implementation: src.tools.repo.RepoManager
+    config:
+      allow_branch: true
+
+  - name: api_spec_builder
+    type: langchain_tool
+    implementation: src.tools.api.ApiSpecBuilder
+
+  - name: db_designer
+    type: langchain_tool
+    implementation: src.tools.db.DbDesigner
+
+  - name: diagram_generator
+    type: langchain_tool
+    implementation: src.tools.design.DiagramGenerator
+
+  - name: tech_stack_analyzer
+    type: langchain_tool
+    implementation: src.tools.design.TechStackAnalyzer
+
+  - name: issue_manager
+    type: langchain_tool
+    implementation: src.tools.pm.IssueManager
+
+  - name: tool_chain_runner
+    type: langchain_tool
+    implementation: src.tools.flow.ToolChainRunner
+
+  - name: container_builder
+    type: langchain_tool
+    implementation: src.tools.devops.ContainerBuilder
+
+  - name: deployer
+    type: langchain_tool
+    implementation: src.tools.devops.Deployer
+
+  - name: secrets_manager
+    type: langchain_tool
+    implementation: src.tools.devops.SecretsManager
+
+  - name: spec_extractor
+    type: langchain_tool
+    implementation: src.tools.discovery.SpecExtractor
+
+# コーディング用のツールチェーン（LangChainのSequentialChainに対応）
+tool_chain:
+  - analyze_requirements
+  - select_tech_stack
+  - generate_scaffold
+  - implement_features
+  - write_tests
+  - static_checks
+  - integrate_artifacts
+  - create_pr
+  - deploy_demo
+
+# 成果物スキーマ（エージェント間の引き継ぎ契約）
+artifacts:
+  - id: design_doc
+    schema: { decisions: [string], tradeoffs: [string], diagrams: [string] }
+  - id: api_spec
+    schema: { endpoints: [ { method: string, path: string, req: object, res: object } ] }
+  - id: db_schema
+    schema: { tables: [ { name: string, columns: [ { name: string, type: string, pk?: bool } ] } ] }
+  - id: code_changes
+    schema: { diffs: [string], summary: string }
+  - id: test_reports
+    schema: { passed: number, failed: number, coverage: number, notes: [string] }
+  - id: pr_link
+    schema: { url: string, branch: string, reviewers: [string] }
+  - id: deploy_info
+    schema: { env: string, url?: string, notes?: string }
+
+# ゲートと承認（Human-in-the-Loop）
+human_in_the_loop:
+  approvals:
+    - at: review
+      approvers:
+        - "Tech Lead"
+        - "Product Owner"
+    - at: deploy_demo
+      approvers:
+        - "Product Owner"
+  policies:
+    - id: pr_quality_gate
+      rule: "lint==pass AND tests.fail==0 AND coverage>=0.7"
+
+# 観測性（LangSmithと連動）
+observability:
+  tracing: langsmith
+  logs:
+    - node_events
+    - agent_decisions
+    - tool_invocations
+  metrics:
+    - lead_time
+    - build_success_rate
+    - gate_pass_rate

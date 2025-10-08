@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+# Ensure local src/ is importable
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+from agi_poc.acceptance_evaluator import evaluate, write_reports
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="acceptance_evaluator_cli", description="Evaluate SPEC.md against intent success criteria")
+    ap.add_argument("--intent_yaml", help="Path to intent YAML (e.g., intents/create_spec_document.yml)")
+    ap.add_argument("--run_id", required=True, help="Run ID under runs/")
+    args = ap.parse_args(argv)
+
+    passed, report = evaluate(args.intent_yaml, args.run_id)
+    jpath, mpath = write_reports(args.run_id, {**report, "passed": passed})
+    print(f"Acceptance: {'PASS' if passed else 'FAIL'}")
+    print(f"Report(JSON): {jpath}")
+    print(f"Report(MD):   {mpath}")
+    return 0 if passed else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

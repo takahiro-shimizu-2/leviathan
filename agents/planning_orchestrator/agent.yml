@@ -1,0 +1,23 @@
+agent_id: planning_orchestrator
+version: 0.1.0
+description: "エージェント選定/生成と実行計画（strategy/timeout/agent_spec）を構築するオーケストレーター"
+capabilities:
+  - agent_selection
+  - plan_builder
+  - timeout_policy
+  - agent_generation
+supported_tools:
+  - filesystem:read
+  - filesystem:write
+limits:
+  timeout_sec: 240
+entry:
+  type: cli
+  command: planning_orchestrator_cli
+  args:
+    - "--intent_yaml"
+    - "{yaml}"
+    - "--user_input"
+    - "{input}"
+    - "--run_id"
+    - "{run_id}"

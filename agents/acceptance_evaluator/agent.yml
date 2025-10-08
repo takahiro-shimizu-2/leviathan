@@ -1,0 +1,25 @@
+agent_id: acceptance_evaluator
+version: 0.1.0
+description: "SPEC.mdの内容をインテントの成功基準に照らして自動評価するエージェント"
+capabilities:
+  - validator
+  - quality_gate
+supported_tools:
+  - filesystem:read
+  - filesystem:write
+limits:
+  timeout_sec: 120
+entry:
+  type: cli
+  command: acceptance_evaluator_cli
+  args:
+    - "--intent_yaml"
+    - "{yaml}"
+    - "--run_id"
+    - "{run_id}"
+self_test:
+  smoke:
+    - "acceptance_evaluator_cli --intent_yaml intents/create_spec_document.yml --run_id test_dummy"
+  expectations:
+    - "runs/test_dummy/ が存在する場合にレポートを出力する"
+

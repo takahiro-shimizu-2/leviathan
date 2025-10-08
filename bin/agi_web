@@ -1,0 +1,1066 @@
+#!/usr/bin/env python3
+import sys
+import os
+import subprocess
+import shutil
+import threading
+import mimetypes
+import time
+import uuid
+from urllib.parse import parse_qs, urlparse, quote as urlquote
+import re
+import json
+from wsgiref.simple_server import make_server
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+SHUTDOWN_FN = None  # set in main()
+
+
+def render_html(body: str, title: str = "AGI Egg UI"):
+    return f"""
+<!doctype html>
+<html lang=\"ja\">
+<head>
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <title>{title}</title>
+  <style>
+    :root {{
+      --bg: #071317;
+      --panel: #0b161a;
+      --panel-border: #10313a;
+      --panel-soft: #0f1f24;
+      --text: #d4e7ea;
+      --muted: #7fa1a7;
+      --accent: #0ea5a6;
+      --accent-700: #0f766e;
+      --ring: rgba(14, 165, 166, 0.25);
+      --ring-strong: rgba(14, 165, 166, 0.5);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      padding: 24px;
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif;
+      background: radial-gradient(1200px 600px at 50% -10%, rgba(14,165,166,0.12), transparent 60%), var(--bg);
+      position: relative;
+      min-height: 100vh;
+    }}
+    body::before {{
+      content: '';
+      position: fixed; inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+      background-size: 48px 48px, 48px 48px;
+      mask-image: radial-gradient(circle at 50% 20%, black, transparent 70%);
+    }}
+    header {{ margin: 0 auto 16px; max-width: 960px; padding: 0 4px; }}
+    h2 {{ margin: 0 0 4px; font-weight: 650; letter-spacing: .2px; }}
+    .muted {{ color: var(--muted); }}
+
+    .frame {{
+      max-width: 960px; margin: 0 auto; padding: 20px; border-radius: 14px;
+      background: linear-gradient(180deg, rgba(20,40,45,0.35), rgba(12,23,27,0.6)) , var(--panel);
+      border: 1px solid var(--panel-border);
+      box-shadow: 0 0 0 1px rgba(9, 176, 187, 0.06) inset, 0 0 60px rgba(0, 224, 208, 0.12);
+    }}
+    .section {{ margin: 18px 8px; }}
+    .label {{ font-size: 14px; color: #b6d0d3; margin-bottom: 8px; }}
+    textarea, input[type=text] {{
+      width: 100%;
+      background: #0d1b20;
+      border: 1px solid #1a343b;
+      color: var(--text);
+      border-radius: 10px;
+      padding: 12px 14px;
+      font-size: 15px;
+      outline: none;
+      transition: border-color .15s ease, box-shadow .15s ease;
+    }}
+    textarea {{ min-height: 180px; resize: vertical; }}
+    textarea:focus {{ border-color: var(--accent-700); box-shadow: 0 0 0 3px var(--ring); }}
+
+    .drop {{
+      border: 2px dashed #27454c;
+      background: #0d1b20;
+      color: #9fb8bc;
+      border-radius: 14px;
+      min-height: 200px;
+      display: flex; align-items: center; justify-content: center; text-align: center;
+      padding: 24px;
+      transition: all .15s ease;
+      position: relative;
+      box-shadow: inset 0 -10px 24px rgba(0,0,0,.2);
+    }}
+    .drop.dragover {{ border-color: var(--accent); color: var(--text); box-shadow: 0 0 0 3px var(--ring), inset 0 -10px 24px rgba(0,0,0,.2); }}
+    .drop .icon {{ display: block; margin: 0 auto 14px; opacity: .9; }}
+    .drop a {{ color: var(--accent); text-decoration: none; }}
+
+    .btn {{
+      display: inline-flex; align-items: center; justify-content: center;
+      gap: 10px; padding: 14px 18px; border-radius: 12px; border: 0; cursor: pointer;
+      font-weight: 600; letter-spacing: .2px;
+    }}
+    .btn.primary {{ width: 100%; background: var(--accent); color: #052b2c; box-shadow: 0 6px 26px rgba(14,165,166,.25); }}
+    .btn.primary:hover {{ background: var(--accent-700); color: #eaffff; }}
+    .btn .ic {{ display: inline-block; width: 18px; height: 18px; }}
+
+    pre {{ background:#0b171b; padding: 12px; border-radius: 10px; overflow:auto; border:1px solid #17343a; color:#cfe3e6; }}
+    .ok {{ color: #16a34a; font-weight: 600; }}
+    .err {{ color: #e11d48; font-weight: 600; }}
+    .row {{ margin: 12px 0; }}
+    a {{ text-decoration: none; color: var(--accent); }}
+    .caption {{ text-align: center; font-size: 13px; margin-top: 6px; }}
+  </style>
+  </head>
+<body>
+  <header>
+    <h2>AGI Egg</h2>
+    <div class=\"muted\">ローカル実行UI（MVP）</div>
+  </header>
+  {body}
+  <script>
+    (function(){{
+      var dz = document.getElementById('dropzone');
+      var picker = document.getElementById('pick');
+      var input = document.getElementById('fileInput');
+      var runForm = document.getElementById('runForm');
+      var statusBox = document.getElementById('statusBox');
+      var runIdEl = document.getElementById('statusRunId');
+      var statusEl = document.getElementById('statusText');
+      var linksEl = document.getElementById('statusLinks');
+      function prevent(e){{ e.preventDefault(); e.stopPropagation(); }}
+      if (dz){{
+        ['dragenter','dragover','dragleave','drop'].forEach(function(name){{ dz.addEventListener(name, prevent, false); }});
+        dz.addEventListener('dragover', function(){{ dz.classList.add('dragover'); }});
+        dz.addEventListener('dragleave', function(){{ dz.classList.remove('dragover'); }});
+        dz.addEventListener('drop', function(e){{
+          dz.classList.remove('dragover');
+          var files = e.dataTransfer.files; if (!files || !files.length) return;
+          var fd = new FormData();
+          for (var i=0; i<files.length; i++){{ fd.append('files', files[i]); }}
+          fetch('/upload', {{ method:'POST', body: fd }}).then(function(r){{ return r.text(); }}).then(function(){{ window.location.reload(); }}).catch(function(err){{ alert('アップロード失敗: '+err); }});
+        }});
+      }}
+      if (picker && input){{
+        picker.addEventListener('click', function(e){{ e.preventDefault(); input.click(); }});
+        input.addEventListener('change', function(){{
+          if (!input.files || !input.files.length) return;
+          var fd = new FormData();
+          var activeRunId = (runIdEl && runIdEl.textContent) ? runIdEl.textContent.trim() : '';
+          if (activeRunId) fd.append('run_id', activeRunId);
+          for (var i=0; i<input.files.length; i++){{ fd.append('files', input.files[i]); }}
+          fetch('/upload', {{ method:'POST', body: fd }}).then(function(r){{ return r.text(); }}).then(function(){{ window.location.reload(); }}).catch(function(err){{ alert('アップロード失敗: '+err); }});
+        }});
+      }}
+
+      // Polling for status if run id present
+      function updateLinks(data){{
+        if (!linksEl) return;
+        var html = '';
+        function a(label, href){{ html += '<li><a href="'+href+'">'+label+'</a></li>'; }}
+        if (data.spec_path) a('SPEC.md', '/view?path='+encodeURIComponent(data.spec_path));
+        if (data.log_path) a('Logs', '/view?path='+encodeURIComponent(data.log_path));
+        (data.artifacts||[]).forEach(function(x){{
+          var label = x[0] || '';
+          var rel = x[1] || '';
+          // Demoはビュー内に埋め込み表示（/view）
+          var useStatic = label.includes('Reports') || label.includes('Deploy');
+          a(label, useStatic ? ('/static?path='+rel) : ('/view?path='+rel));
+        }});
+        linksEl.innerHTML = html ? ('<ul>'+html+'</ul>') : '<div class="muted">(no artifacts yet)</div>';
+      }}
+      // Render validation details table if available
+      function renderValidation(details){{
+        var host = document.getElementById('validationBox');
+        if (!host || !details || !details.checks) return;
+        var html = '<div class="label">Validation Details</div><table style="width:100%;border-collapse:collapse">';
+        html += '<tr><th style="text-align:left;padding:6px;border-bottom:1px solid #17343a;">Name</th><th style="text-align:left;padding:6px;border-bottom:1px solid #17343a;">Status</th><th style="text-align:left;padding:6px;border-bottom:1px solid #17343a;">Detail</th></tr>';
+        details.checks.forEach(function(ch){{
+          var ok = ch.ok;
+          var name = ch.name || '';
+          var det = JSON.stringify(ch.detail||{{}});
+          html += '<tr><td style="padding:6px;border-bottom:1px solid #17343a;">'+name+'</td><td style="padding:6px;border-bottom:1px solid #17343a;"><span class="'+(ok?'ok':'err')+'">'+(ok?'ok':'ng')+'</span></td><td style="padding:6px;border-bottom:1px solid #17343a;">'+det+'</td></tr>';
+        }});
+        html += '</table>';
+        host.innerHTML = html;
+      }}
+      function poll(){{
+        if (!runIdEl) return;
+        var rid = (runIdEl.textContent||'').trim();
+        if (!rid) return;
+        fetch('/status?run_id='+encodeURIComponent(rid)).then(function(r){{ return r.json(); }}).then(function(js){{
+          if (statusEl) statusEl.textContent = js.phase + (js.validation?(' / '+js.validation):'');
+          updateLinks(js);
+          if (js.validation_details) renderValidation(js.validation_details);
+        }}).catch(function(){{}});
+      }}
+      setInterval(poll, 1500);
+    }})();
+  </script>
+</body>
+</html>
+""".encode('utf-8')
+
+
+def _parse_multipart(environ):
+    """
+    Minimal multipart/form-data parser for WSGI environ on Python 3.12+ (no cgi).
+    Returns a list of dicts: {name, filename, content (bytes), content_type}
+    """
+    ctype = environ.get('CONTENT_TYPE') or ''
+    if 'multipart/form-data' not in ctype:
+        return []
+    # Extract boundary
+    boundary = None
+    for part in ctype.split(';'):
+        part = part.strip()
+        if part.startswith('boundary='):
+            boundary = part.split('=', 1)[1].strip()
+            if boundary.startswith('"') and boundary.endswith('"'):
+                boundary = boundary[1:-1]
+            break
+    if not boundary:
+        return []
+    # Read request body. Prefer CONTENT_LENGTH; fall back to safe chunked read.
+    try:
+        size = int(environ.get('CONTENT_LENGTH') or 0)
+    except Exception:
+        size = 0
+    if size > 0:
+        body = environ['wsgi.input'].read(size)
+    else:
+        # Some environments omit Content-Length (e.g., TE: chunked via proxies).
+        # WSGI doesn't mandate chunked support; attempt a bounded read loop.
+        max_bytes = 100 * 1024 * 1024  # 100MB safety cap
+        body_chunks = []
+        total = 0
+        while True:
+            chunk = environ['wsgi.input'].read(64 * 1024)
+            if not chunk:
+                break
+            body_chunks.append(chunk)
+            total += len(chunk)
+            if total >= max_bytes:
+                break
+        body = b"".join(body_chunks)
+    if not body:
+        return []
+    sep = ('--' + boundary).encode('utf-8')
+    end_mark = ('--' + boundary + '--').encode('utf-8')
+    out = []
+    # Split by boundary markers
+    # Body format starts with --boundary\r\n
+    # Ensure we handle both CRLF and LF-only gracefully
+    # First split by sep; filter empty chunks
+    chunks = body.split(sep)
+    for chunk in chunks:
+        if not chunk:
+            continue
+        # Trim leading CRLF and leading dashes
+        if chunk.startswith(b'--'):
+            # closing marker
+            chunk = chunk[2:]
+        # strip leading CRLF
+        if chunk.startswith(b'\r\n'):
+            chunk = chunk[2:]
+        elif chunk.startswith(b'\n'):
+            chunk = chunk[1:]
+        if not chunk.strip():
+            continue
+        # Split headers and content
+        header_sep = b'\r\n\r\n'
+        hs_idx = chunk.find(header_sep)
+        if hs_idx == -1:
+            # try LF
+            header_sep = b'\n\n'
+            hs_idx = chunk.find(header_sep)
+            if hs_idx == -1:
+                continue
+        raw_headers = chunk[:hs_idx]
+        content = chunk[hs_idx + len(header_sep):]
+        # Strip trailing CRLF typical before next boundary
+        if content.endswith(b'\r\n'):
+            content = content[:-2]
+        elif content.endswith(b'\n'):
+            content = content[:-1]
+        # Parse headers
+        try:
+            header_text = raw_headers.decode('latin-1')
+        except Exception:
+            header_text = ''
+        headers = {}
+        for line in header_text.splitlines():
+            if not line.strip() or ':' not in line:
+                continue
+            k, v = line.split(':', 1)
+            headers[k.strip().lower()] = v.strip()
+        cd = headers.get('content-disposition', '')
+        if not cd:
+            continue
+        # Parse content-disposition params (including RFC5987 filename*)
+        disp_params = {}
+        parts = [p.strip() for p in cd.split(';')]
+        # first token is 'form-data'
+        for p in parts[1:]:
+            if '=' in p:
+                pk, pv = p.split('=', 1)
+                pv = pv.strip()
+                if pv.startswith('"') and pv.endswith('"'):
+                    pv = pv[1:-1]
+                disp_params[pk.strip()] = pv
+        # RFC5987: filename*=utf-8''%E3%81%AA%E3%81%A9
+        if 'filename*' in disp_params and not disp_params.get('filename'):
+            try:
+                rawv = disp_params['filename*']
+                # format: <charset>''<percent-encoded>
+                if "''" in rawv:
+                    _, enc = rawv.split("''", 1)
+                else:
+                    enc = rawv
+                disp_params['filename'] = urlparse(f"x://x/{enc}").path  # quick percent-decoding
+            except Exception:
+                pass
+        name = disp_params.get('name')
+        filename = disp_params.get('filename')
+        if not name:
+            continue
+        out.append({
+            'name': name,
+            'filename': filename or '',
+            'content': content,
+            'content_type': headers.get('content-type', ''),
+        })
+    return out
+
+
+def _clean_raw_path(raw: str) -> str:
+    raw0 = (raw or '').strip()
+    # Support file:// URLs pasted in
+    if raw0.startswith('file://'):
+        try:
+            raw0 = urlparse(raw0).path or raw0
+        except Exception:
+            pass
+    # Strip wrapping single/double quotes
+    if (raw0.startswith('"') and raw0.endswith('"')) or (raw0.startswith("'") and raw0.endswith("'")):
+        raw0 = raw0[1:-1]
+    return raw0
+
+
+def _resolve_or_import_path(raw: str, max_copy_bytes: int = 50 * 1024 * 1024) -> str | None:
+    """Resolve a user-provided path.
+
+    - Accept relative path under ROOT
+    - Accept absolute path; if inside ROOT, use as-is
+    - If absolute and outside ROOT, copy into uploads/external and use the copy (size-limited)
+    Returns absolute path of a file under ROOT or None if invalid.
+    """
+    raw0 = _clean_raw_path(raw)
+    if not raw0:
+        return None
+    root_real = os.path.realpath(ROOT)
+    if os.path.isabs(raw0):
+        cand = os.path.realpath(raw0)
+        # if already under ROOT, accept
+        if cand.startswith(root_real + os.sep) or cand == root_real:
+            return cand
+        # else attempt safe import (copy) if file exists and size within limit
+        if os.path.exists(cand) and os.path.isfile(cand):
+            try:
+                st = os.stat(cand)
+                if st.st_size <= max_copy_bytes:
+                    ext_dir = os.path.join(ROOT, 'uploads', 'external')
+                    os.makedirs(ext_dir, exist_ok=True)
+                    base = os.path.basename(cand)
+                    dest = os.path.join(ext_dir, base)
+                    i = 1
+                    name, ext = os.path.splitext(base)
+                    while os.path.exists(dest):
+                        dest = os.path.join(ext_dir, f"{name}_{i}{ext}")
+                        i += 1
+                    shutil.copy2(cand, dest)
+                    return os.path.realpath(dest)
+            except Exception:
+                return None
+        return None
+    # relative
+    cand = os.path.realpath(os.path.join(ROOT, raw0))
+    if cand.startswith(root_real + os.sep) or cand == root_real:
+        return cand
+    return None
+
+
+def recent_uploads(limit=10):
+    up_dir = os.path.join(ROOT, 'uploads')
+    if not os.path.isdir(up_dir):
+        return []
+    entries = []
+    for root, _, files in os.walk(up_dir):
+        for fn in files:
+            p = os.path.join(root, fn)
+            try:
+                st = os.stat(p)
+                entries.append((st.st_mtime, p))
+            except Exception:
+                pass
+    entries.sort(reverse=True)
+    rels = []
+    for _, p in entries[:limit]:
+        rel = os.path.relpath(p, ROOT)
+        rels.append(rel)
+    return rels
+
+
+def list_recent_runs(limit=8):
+    runs_dir = os.path.join(ROOT, 'src', 'agi_poc', 'runs')  # fallback if exists
+    alt_runs = os.path.join(ROOT, 'runs')
+    base = alt_runs if os.path.isdir(alt_runs) else runs_dir
+    out = []
+    if not os.path.isdir(base):
+        return out
+    try:
+        entries = []
+        for name in os.listdir(base):
+            p = os.path.join(base, name)
+            try:
+                st = os.stat(p)
+                if os.path.isdir(p):
+                    entries.append((st.st_mtime, name))
+            except Exception:
+                pass
+        entries.sort(reverse=True)
+        for _, name in entries[:limit]:
+            out.append(name)
+    except Exception:
+        pass
+    return out
+
+
+# ---- Developer dashboard helpers (local-only MVP) ----
+def _runs_base_dir():
+    runs_dir = os.path.join(ROOT, 'src', 'agi_poc', 'runs')
+    alt_runs = os.path.join(ROOT, 'runs')
+    return alt_runs if os.path.isdir(alt_runs) else runs_dir
+
+
+def _scan_cost_from_log(log_path: str) -> float:
+    """Best-effort: parse approximate USD cost from log text.
+    Looks for patterns like 'cost: $0.12', 'total cost $1.23', 'cost_usd: 0.45'.
+    Returns float cost or 0.0 if not found.
+    """
+    try:
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            text = f.read()
+    except Exception:
+        return 0.0
+    # Prefer explicit JSON-like keys
+    m = re.search(r"cost_usd\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)", text, re.IGNORECASE)
+    if m:
+        try:
+            return float(m.group(1))
+        except Exception:
+            pass
+    # Dollar amounts near the word cost
+    dollars = re.findall(r"(?:total\s+)?cost[^\n$]*\$\s*([0-9]+(?:\.[0-9]+)?)", text, re.IGNORECASE)
+    if dollars:
+        try:
+            # Take the last occurrence as the total
+            return float(dollars[-1])
+        except Exception:
+            pass
+    # Standalone $amount lines (fallback; may overcount if multiple)
+    dollars = re.findall(r"\$\s*([0-9]+(?:\.[0-9]+)?)", text)
+    if dollars:
+        try:
+            return float(dollars[-1])
+        except Exception:
+            pass
+    return 0.0
+
+
+def _parse_validation(vpath: str) -> tuple[bool | None, dict | None]:
+    """Return (ok, details) from validation.json if readable.
+    ok may be None if indeterminate.
+    """
+    try:
+        with open(vpath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        return (None, None)
+    # Heuristics: common shapes {ok: bool} or {checks: [{ok: bool}]}
+    if isinstance(data, dict):
+        if 'ok' in data and isinstance(data['ok'], bool):
+            return (data['ok'], data)
+        if 'checks' in data and isinstance(data['checks'], list):
+            oks = [c.get('ok') for c in data['checks'] if isinstance(c, dict) and 'ok' in c]
+            if oks:
+                return (all(bool(x) for x in oks), data)
+    return (None, data if isinstance(data, dict) else None)
+
+
+def summarize_run(run_id: str) -> dict:
+    """Summarize a run by id: phase, ok?, cost, paths.
+    ok heuristic:
+      - validation.json all ok -> True, else False if any ng
+      - else presence of demo/artifact implies success
+      - else inspect log for error keywords
+    """
+    base = os.path.join(_runs_base_dir(), run_id)
+    log_path = os.path.join(base, 'langstack.txt')
+    spec_path = os.path.join(base, 'SPEC.md')
+    vpath = os.path.join(base, 'validation.json')
+    demo_path = os.path.join(base, 'demo', 'index.html')
+    ok: bool | None = None
+    phase = ''
+    validation = ''
+    # Try validation.json first
+    if os.path.exists(vpath):
+        ok, _ = _parse_validation(vpath)
+    # Artifacts imply success if no validation
+    if ok is None:
+        if os.path.exists(demo_path):
+            ok = True
+    # Infer from log
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+        except Exception:
+            lines = []
+        # phase inference similar to /status
+        key_map = [
+            (r'validated', 'validated'),
+            (r'executed', 'executed'),
+            (r'planned', 'planned'),
+            (r'intent', 'intent_detected'),
+        ]
+        for ln in reversed(lines[-300:]):
+            low = ln.lower()
+            if 'approved' in low:
+                validation = 'approved'
+            elif 'changes_requested' in low or 'changes requested' in low:
+                validation = 'changes_requested'
+            for pat, ph in key_map:
+                if pat in low:
+                    phase = ph
+                    break
+            if phase:
+                break
+        if ok is None:
+            text_tail = ''.join(lines[-400:]).lower() if lines else ''
+            if any(bad in text_tail for bad in ['traceback', 'error', 'exception']):
+                ok = False
+    # Default unknown -> False if we saw explicit error; else None
+    cost = _scan_cost_from_log(log_path) if os.path.exists(log_path) else 0.0
+    return {
+        'run_id': run_id,
+        'phase': phase,
+        'validation': validation,
+        'ok': ok if ok is not None else False,
+        'cost_usd': round(cost, 4),
+        'spec_path': os.path.relpath(spec_path, ROOT) if os.path.exists(spec_path) else '',
+        'log_path': os.path.relpath(log_path, ROOT) if os.path.exists(log_path) else '',
+        'demo_path': os.path.relpath(demo_path, ROOT) if os.path.exists(demo_path) else '',
+    }
+
+
+def compute_metrics(limit: int = 20) -> dict:
+    """Aggregate dashboard metrics from recent runs."""
+    base = _runs_base_dir()
+    if not os.path.isdir(base):
+        return {'active_run_id': '', 'phase': '', 'failure_rate': 0.0, 'total_cost_usd': 0.0, 'runs': []}
+    # Recent run IDs chronological desc by mtime
+    entries = []
+    for name in os.listdir(base):
+        p = os.path.join(base, name)
+        try:
+            st = os.stat(p)
+            if os.path.isdir(p):
+                entries.append((st.st_mtime, name))
+        except Exception:
+            pass
+    entries.sort(reverse=True)
+    run_ids = [name for _, name in entries[:limit]]
+    summaries = [summarize_run(rid) for rid in run_ids]
+    # failure rate over determinate runs
+    decided = [s for s in summaries if isinstance(s.get('ok'), bool)]
+    fails = sum(1 for s in decided if not s['ok'])
+    denom = len(decided) or 1
+    failure_rate = fails / denom
+    total_cost = sum(float(s.get('cost_usd') or 0.0) for s in summaries)
+    active = summaries[0] if summaries else None
+    return {
+        'active_run_id': active['run_id'] if active else '',
+        'phase': active['phase'] if active else '',
+        'failure_rate': round(failure_rate, 4),
+        'total_cost_usd': round(total_cost, 4),
+        'runs': summaries,
+    }
+
+
+def page_index(environ, message: str = "", stdout: str = "", artifact_rel: str = "", extras: dict | None = None):
+    body = []
+    frame = []
+    # Request text area
+    frame += [
+        '<div class="section">',
+        '<div class="label">リクエスト内容</div>',
+        '<form id="runForm" method="POST" action="/run">',
+        '<textarea name="request" placeholder="AIに何をしてほしいか入力してください..."></textarea>',
+        '</form>',
+        '</div>'
+    ]
+    # Options (non-intrusive, keep theme)
+    frame += [
+        '<div class="section">',
+        '<div class="label">オプション（実験的）</div>',
+        '<div style="display:flex;gap:12px;flex-wrap:wrap">',
+        '<label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="use_langgraph" /> LangGraphモード</label>',
+        '<label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="simulate" /> シミュレーション</label>',
+        '<label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="checkpoint" /> チェックポイント</label>',
+        '<span style="display:flex;align-items:center;gap:8px"><span class="muted">Resume Run ID:</span> <input type="text" name="resume" placeholder="20251007T123305_abcd12" style="width:260px" /></span>',
+        '</div>',
+        '</div>'
+    ]
+    # Dropzone with click-to-select
+    frame += [
+        '<div class="section">',
+        '<div class="label">資料の添付</div>',
+        '<div id="dropzone" class="drop">',
+        '<div>',
+        '<svg class="icon" width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 16V4m0 0l-4 4m4-4l4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M20 16.5v2a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 014 18.5v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+        '<div>ファイルをドラッグ＆ドロップ</div>',
+        '<div style="margin-top:6px">または <a id="pick" href="#">クリックして選択</a></div>',
+        '<input id="fileInput" type="file" name="files" multiple hidden />',
+        '</div>',
+        '</div>',
+        '</div>'
+    ]
+    # Submit button binds to runForm using form attribute
+    frame += [
+        '<div class="section">',
+        '<button type="submit" class="btn primary" form="runForm">',
+        '<svg class="ic" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 12h8M4 12l6-6M4 12l6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+        '送信する',
+        '</button>',
+        '<div class="caption muted">画像、PDF、テキストファイルなど、様々な形式に対応しています</div>',
+        '</div>'
+    ]
+    body += [f'<div class="frame">{"".join(frame)}</div>']
+
+    # Uploaded files list (optional, small)
+    files = recent_uploads()
+    if files:
+        body += ['<section class="row" style="max-width:960px;margin:18px auto;">',
+                 '<div class="muted" style="margin-bottom:6px;">最近の添付</div><ul>']
+        for rel in files:
+            # Ensure href query parameter is URL-encoded to handle spaces/UTF-8 safely
+            enc = urlquote(rel, safe='')
+            body += [f'<li><a href="/static?path={enc}">{rel}</a></li>']
+        body += ['</ul></section>']
+
+    if message:
+        body.append(f'<div class="row" style="max-width:960px;margin:12px auto;">{message}</div>')
+    if stdout:
+        body.append('<div class="row" style="max-width:960px;margin:12px auto;\"><div class="muted">Runner Output</div>')
+        body.append(f'<pre>{stdout}</pre></div>')
+    # Results panel
+    if extras:
+        rid = extras.get('run_id')
+        if rid:
+            body.append('<div class="frame" style="margin-top:16px">')
+            body.append('<div class="label">実行結果</div>')
+            body.append(f'<div class="row">Run ID: <code id="statusRunId">{rid}</code></div>')
+            body.append(f'<div class="row">Status: <span id="statusText">{(extras.get("phase") or "") + ((" / "+extras.get("validation")) if extras.get("validation") else "")}</span></div>')
+            # Links
+            body.append('<div class="row"><div class="muted">Artifacts</div><div id="statusLinks"></div></div>')
+            # Actions: Re-run
+            body.append('<div class="row"><form id="rerunForm" method="POST" action="/rerun"><input type="hidden" name="run_id" value="'+rid+'" /><button class="btn" type="submit">再実行（レビュー反映）</button></form></div>')
+            body.append('</div>')
+
+    # Recent runs
+    runs = list_recent_runs()
+    if runs:
+        body.append('<section class="row" style="max-width:960px;margin:18px auto;">')
+        body.append('<div class="muted" style="margin-bottom:6px;">最近の実行</div><ul>')
+        for name in runs:
+            # Link to SPEC and log if exist
+            spec_rel = f'runs/{name}/SPEC.md'
+            log_rel = f'runs/{name}/langstack.txt'
+            demo_rel = f'runs/{name}/demo/index.html'
+            items = []
+            if os.path.exists(os.path.join(ROOT, spec_rel)):
+                items.append(f'<a href="/view?path={urlquote(spec_rel, safe="")}">SPEC</a>')
+            if os.path.exists(os.path.join(ROOT, demo_rel)):
+                items.append(f'<a href="/view?path={urlquote(demo_rel, safe="")}">Demo</a>')
+            if os.path.exists(os.path.join(ROOT, log_rel)):
+                items.append(f'<a href="/view?path={urlquote(log_rel, safe="")}">Log</a>')
+            body.append(f'<li><code>{name}</code> - ' + (' | '.join(items) if items else '<span class="muted">(no artifacts)</span>') + '</li>')
+        body.append('</ul></section>')
+
+    if artifact_rel and not extras:
+        body.append('<div class="row ok" style="max-width:960px;margin:12px auto;">Success</div>')
+        body.append(f'<div class="row" style="max-width:960px;margin:12px auto;\"><a href="/view?path={urlquote(artifact_rel, safe="")}">成果物を表示</a></div>')
+    return render_html("\n".join(body))
+
+
+def app(environ, start_response):
+    try:
+        method = environ.get('REQUEST_METHOD', 'GET').upper()
+        path = environ.get('PATH_INFO', '/')
+        if method == 'GET' and path == '/':
+            start_response('200 OK', [('Content-Type', 'text/html; charset=utf-8')])
+            return [page_index(environ)]
+        if method == 'GET' and path == '/whoami':
+            start_response('200 OK', [('Content-Type', 'text/plain; charset=utf-8')])
+            return [b'agi_web']
+
+        # Developer dashboard (local only). Optional token gate via DEV_DASHBOARD_TOKEN
+        if method == 'GET' and path == '/dev':
+            token_env = os.environ.get('DEV_DASHBOARD_TOKEN', '')
+            if token_env:
+                qs = parse_qs(environ.get('QUERY_STRING') or '')
+                tok = (qs.get('token') or [''])[0]
+                if tok != token_env:
+                    start_response('403 Forbidden', [('Content-Type', 'text/plain; charset=utf-8')])
+                    return [b'Forbidden']
+            # Simple dashboard UI (polls /dev_stats)
+            body = []
+            body.append('<div class="frame">')
+            body.append('<div class="label">Developer Dashboard (Local)</div>')
+            body.append('<div class="row">')
+            body.append('<div id="dev-summary" class="muted">Loading...</div>')
+            body.append('</div>')
+            body.append('<div class="row"><div id="runsTable"></div></div>')
+            body.append('</div>')
+            html = "\n".join(body)
+            page = render_html(html, title='Dev Dashboard')
+            # inject polling script specific to /dev
+            # Note: render_html already includes a script block; add another here for clarity
+            """
+            page = page.replace(b'</body>', (
+                b"<script>\n(function(){\n  function esc(x){return (x||'').toString().replace(/[&<>]/g, s=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[s]));}\n  function r(fmt){return Math.round(fmt*10000)/10000;}\n  function render(stats){\n    var h = '';\n    h += '<div>Active Run: <code>'+esc(stats.active_run_id||'-')+'</code></div>';\n    h += '<div>Phase: <span class="ok">'+esc(stats.phase||'-')+'</span></div>';\n    h += '<div>Failure Rate: <strong>'+ (Math.round((stats.failure_rate||0)*1000)/10) +'%</strong></div>';\n    h += '<div>Total Cost (recent): $'+ esc(r(stats.total_cost_usd||0)) +'</div>';\n    document.getElementById('dev-summary').innerHTML = h;\n    var rt = '<div class="label">Recent Runs</div><table style="width:100%;border-collapse:collapse"><tr><th style="text-align:left;padding:6px;border-bottom:1px solid #17343a;">Run ID</th><th style="text-align:left;padding:6px;border-bottom:1px solid #17343a;">Phase</th><th style="text-align:left;padding:6px;border-bottom:1px solid #17343a;">OK</th><th style="text-align:left;padding:6px;border-bottom:1px solid #17343a;">Cost</th><th style="text-align:left;padding:6px;border-bottom:1px solid #17343a;">Links</th></tr>';\n    (stats.runs||[]).forEach(function(s){\n      var links = [];\n      if (s.spec_path) links.push('<a href=\"/view?path='+encodeURIComponent(s.spec_path)+'\">SPEC</a>');\n      if (s.demo_path) links.push('<a href=\"/view?path='+encodeURIComponent(s.demo_path)+'\">Demo</a>');\n      if (s.log_path) links.push('<a href=\"/view?path='+encodeURIComponent(s.log_path)+'\">Log</a>');\n      rt += '<tr>'+
+            '<td style="padding:6px;border-bottom:1px solid #17343a;"><code>'+esc(s.run_id)+'</code></td>'+
+            '<td style="padding:6px;border-bottom:1px solid #17343a;">'+esc(s.phase||'')+'</td>'+
+            '<td style="padding:6px;border-bottom:1px solid #17343a;">'+(s.ok?'<span class="ok">ok</span>':'<span class="err">ng</span>')+'</td>'+
+            '<td style="padding:6px;border-bottom:1px solid #17343a;">$'+esc(r(s.cost_usd||0))+'</td>'+
+            '<td style="padding:6px;border-bottom:1px solid #17343a;">'+links.join(' | ')+'</td>'+
+            '</tr>';\n    });\n    rt += '</table>';\n    document.getElementById('runsTable').innerHTML = rt;\n  }\n  function poll(){\n    fetch('/dev_stats').then(function(r){return r.json()}).then(function(js){render(js)}).catch(function(e){});\n  }\n  setInterval(poll, 1500);\n  poll();\n})();\n</script>\n</body>"))
+            """
+            start_response('200 OK', [('Content-Type', 'text/html; charset=utf-8')])
+            return [page]
+
+        if method == 'GET' and path == '/dev_stats':
+            token_env = os.environ.get('DEV_DASHBOARD_TOKEN', '')
+            if token_env:
+                qs = parse_qs(environ.get('QUERY_STRING') or '')
+                tok = (qs.get('token') or [''])[0]
+                if tok != token_env:
+                    start_response('403 Forbidden', [('Content-Type', 'application/json')])
+                    return [b'{"error":"forbidden"}']
+            stats = compute_metrics(limit=20)
+            start_response('200 OK', [('Content-Type', 'application/json')])
+            return [json.dumps(stats).encode('utf-8')]
+
+        if method == 'POST' and path == '/run':
+            try:
+                size = int(environ.get('CONTENT_LENGTH') or 0)
+            except ValueError:
+                size = 0
+            data = environ['wsgi.input'].read(size)
+            qs = parse_qs(data.decode('utf-8'))
+            request_text = (qs.get('request') or [''])[0]
+            if not request_text.strip():
+                start_response('200 OK', [('Content-Type', 'text/html; charset=utf-8')])
+                return [page_index(environ, '<span class="err">依頼が空です</span>')]
+
+            # Determine mode
+            use_langgraph = 'use_langgraph' in qs
+            stdout = ''
+            artifact_rel = ''
+            extras = {}
+            if use_langgraph:
+                # Run LangGraph adapter
+                langstack = os.path.join(ROOT, 'bin', 'langstack')
+                # pre-generate run id for polling
+                rid = time.strftime('%Y%m%dT%H%M%S') + '_' + str(uuid.uuid4())[:8]
+                cmd = [sys.executable, langstack, 'run', '--input', request_text, '--experimental-langgraph', '--run_id', rid]
+                if 'simulate' in qs:
+                    cmd.append('--simulate')
+                if 'checkpoint' in qs:
+                    cmd.append('--checkpoint')
+                # Launch asynchronously to allow progress polling
+                subprocess.Popen(cmd, cwd=ROOT)
+                artifact_rel = f'runs/{rid}/SPEC.md'
+                extras = {'run_id': rid, 'log_path': f'runs/{rid}/langstack.txt', 'phase': 'starting', 'validation': ''}
+            else:
+                # Run legacy AGI flow
+                agi = os.path.join(ROOT, 'bin', 'agi')
+                cmd = [sys.executable, agi, 'run', request_text, '--allow-agent-gen']
+                proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+                stdout = (proc.stdout or '') + ('\n' + (proc.stderr or '') if proc.stderr else '')
+                for line in (proc.stdout or '').splitlines():
+                    if 'Artifact:' in line:
+                        parts = line.split('Artifact: ', 1)
+                        if len(parts) == 2:
+                            artifact_rel = parts[1].strip()
+                            break
+
+            start_response('200 OK', [('Content-Type', 'text/html; charset=utf-8')])
+            return [page_index(environ, '', stdout, artifact_rel, extras)]
+
+        if method == 'GET' and path == '/status':
+            # Returns JSON status for a given run_id
+            q = parse_qs(environ.get('QUERY_STRING') or '')
+            rid = (q.get('run_id') or [''])[0]
+            import json
+            res = {"run_id": rid, "phase": "", "validation": "", "spec_path": "", "log_path": "", "artifacts": [], "validation_details": None}
+            if rid:
+                base = os.path.join(ROOT, 'runs', rid)
+                log_path = os.path.join(base, 'langstack.txt')
+                spec_path = os.path.join(base, 'SPEC.md')
+                res['log_path'] = os.path.relpath(log_path, ROOT) if os.path.exists(log_path) else ''
+                res['spec_path'] = os.path.relpath(spec_path, ROOT) if os.path.exists(spec_path) else ''
+                # try validation.json
+                vj = os.path.join(base, 'validation.json')
+                if os.path.exists(vj):
+                    try:
+                        with open(vj, 'r', encoding='utf-8') as f:
+                            v = json.load(f)
+                        res['validation_details'] = v
+                    except Exception:
+                        res['validation_details'] = None
+                    # infer validation string from checks
+                    # prefer reading phase from last log line
+                # Phase/Validation heuristic from logs
+                if os.path.exists(log_path):
+                    try:
+                        with open(log_path, 'r', encoding='utf-8') as f:
+                            lines = f.read().splitlines()[-50:]
+                        for ln in reversed(lines):
+                            if '[Validation]' in ln:
+                                res['phase'] = 'validated'
+                                res['validation'] = 'approved' if 'approved' in ln else 'changes_requested'
+                                break
+                            if '[Execution]' in ln:
+                                res['phase'] = 'executed'; break
+                            if '[Planning]' in ln:
+                                res['phase'] = 'planned'; break
+                            if '[Intent]' in ln:
+                                res['phase'] = 'intent_detected'; break
+                    except Exception:
+                        pass
+                # Artifacts if exist
+                arts = [
+                    ('Demo', os.path.join('runs', rid, 'demo', 'index.html')),
+                    ('Design Doc', os.path.join('runs', rid, 'artifacts', 'design_doc.md')),
+                    ('API Spec', os.path.join('runs', rid, 'artifacts', 'api_spec.md')),
+                    ('UI Design', os.path.join('runs', rid, 'artifacts', 'ui_design.md')),
+                    ('Test Reports', os.path.join('runs', rid, 'artifacts', 'test_reports.json')),
+                    ('Deploy Info', os.path.join('runs', rid, 'artifacts', 'deploy_info.json')),
+                    ('Review Comments', os.path.join('runs', rid, 'review_comments.md')),
+                ]
+                present = []
+                for label, rel in arts:
+                    if os.path.exists(os.path.join(ROOT, rel)):
+                        present.append((label, rel))
+                res['artifacts'] = present
+            start_response('200 OK', [('Content-Type', 'application/json')])
+            return [json.dumps(res).encode('utf-8')]
+
+        if method == 'POST' and path == '/rerun':
+            try:
+                size = int(environ.get('CONTENT_LENGTH') or 0)
+            except ValueError:
+                size = 0
+            data = environ['wsgi.input'].read(size)
+            qs = parse_qs(data.decode('utf-8'))
+            rid = (qs.get('run_id') or [''])[0].strip()
+            if not rid:
+                start_response('400 Bad Request', [('Content-Type', 'text/plain; charset=utf-8')])
+                return [b'missing run_id']
+            # resume with checkpoint in LangGraph mode
+            langstack = os.path.join(ROOT, 'bin', 'langstack')
+            cmd = [sys.executable, langstack, 'run', '--input', 'resume', '--experimental-langgraph', '--checkpoint', '--resume', rid]
+            subprocess.Popen(cmd, cwd=ROOT)
+            start_response('202 Accepted', [('Content-Type', 'text/plain; charset=utf-8')])
+            return [f'Rerunning {rid}'.encode('utf-8')]
+
+        if method == 'POST' and path == '/upload':
+            # Handle multipart upload
+            content_type = environ.get('CONTENT_TYPE', '')
+            if 'multipart/form-data' not in content_type:
+                start_response('400 Bad Request', [('Content-Type', 'text/plain; charset=utf-8')])
+                return [b'Expected multipart/form-data']
+            parts = _parse_multipart(environ)
+            # Accept file parts even if filename is missing; we'll generate one
+            files = [p for p in parts if p.get('name') == 'files' and (p.get('content') is not None)]
+            rid_parts = [p for p in parts if p.get('name') == 'run_id' and p.get('content')]
+            if not files:
+                start_response('200 OK', [('Content-Type', 'text/html; charset=utf-8')])
+                return [page_index(environ, '<span class="err">ファイルが選択されていません</span>')]
+            # Determine destination: if run_id provided, save under runs/<rid>/inputs
+            if rid_parts:
+                try:
+                    rid = rid_parts[0].get('content', b'').decode('utf-8').strip()
+                except Exception:
+                    rid = ''
+            else:
+                rid = ''
+            if rid:
+                up_dir = os.path.join(ROOT, 'runs', rid, 'inputs')
+            else:
+                batch = time.strftime('%Y%m%dT%H%M%S') + '_' + str(uuid.uuid4())[:6]
+                up_dir = os.path.join(ROOT, 'uploads', batch)
+            os.makedirs(up_dir, exist_ok=True)
+            saved = 0
+            for p in files:
+                # sanitize/generate filename
+                base = os.path.basename(p.get('filename') or '')
+                if not base:
+                    # Derive extension from content type when possible
+                    ctype = (p.get('content_type') or '').lower()
+                    ext = ''
+                    if '/' in ctype:
+                        main, sub = ctype.split('/', 1)
+                        # Normalize some common subtypes
+                        sub = {'jpeg': 'jpg'}.get(sub, sub)
+                        ext = f'.{sub}' if sub and sub.isascii() else ''
+                    base = f"upload_{time.strftime('%Y%m%dT%H%M%S')}_{uuid.uuid4().hex[:6]}{ext}"
+                dest = os.path.join(up_dir, base)
+                # avoid overwrite
+                i = 1
+                name, ext = os.path.splitext(base)
+                while os.path.exists(dest):
+                    dest = os.path.join(up_dir, f"{name}_{i}{ext}")
+                    i += 1
+                with open(dest, 'wb') as f:
+                    f.write(p.get('content') or b'')
+                saved += 1
+            msg = f'<span class="ok">{saved} 件アップロードしました</span>' if saved else '<span class="err">アップロードに失敗しました</span>'
+            start_response('200 OK', [('Content-Type', 'text/html; charset=utf-8')])
+            return [page_index(environ, msg)]
+
+        # Removed: login and absolute-path import features
+
+        if path == '/health' and method in ('GET', 'HEAD'):
+            start_response('200 OK', [('Content-Type', 'text/plain; charset=utf-8')])
+            return [b'ok']
+
+        if path == '/shutdown' and method == 'POST':
+            global SHUTDOWN_FN
+            if SHUTDOWN_FN is None:
+                start_response('500 Internal Server Error', [('Content-Type', 'text/plain; charset=utf-8')])
+                return [b'Shutdown not available']
+            # trigger server shutdown in a separate thread to avoid deadlock
+            threading.Thread(target=SHUTDOWN_FN, daemon=True).start()
+            start_response('200 OK', [('Content-Type', 'text/html; charset=utf-8')])
+            return [render_html('<div class="row ok">サーバーを停止中です。数秒後に接続が切れます。</div>')]
+
+        if method == 'GET' and path == '/view':
+            # Use WSGI-provided QUERY_STRING to avoid parsing issues
+            q = parse_qs(environ.get('QUERY_STRING') or '')
+            raw = (q.get('path') or [''])[0]
+            abs_path = _resolve_or_import_path(raw)
+            if not abs_path:
+                start_response('400 Bad Request', [('Content-Type', 'text/plain; charset=utf-8')])
+                return [b'Invalid path']
+            if not os.path.exists(abs_path):
+                start_response('404 Not Found', [('Content-Type', 'text/plain; charset=utf-8')])
+                return [b'Not found']
+            # Decide how to render: text preview vs binary (image/pdf/etc.)
+            mime, _ = mimetypes.guess_type(abs_path)
+            is_text = False
+            if mime and mime.startswith('text/'):
+                is_text = True
+            else:
+                # common text-like extensions
+                _, ext = os.path.splitext(abs_path)
+                if ext.lower() in ('.md', '.txt', '.json', '.yaml', '.yml', '.log', '.py', '.ini', '.cfg'):
+                    is_text = True
+            start_response('200 OK', [('Content-Type', 'text/html; charset=utf-8')])
+            rel_title = os.path.basename(abs_path)
+            if is_text:
+                # HTMLは埋め込み表示（iframe）でレンダリング
+                if (mime and mime.startswith('text/html')) or rel_title.lower().endswith('.html'):
+                    rel_or_abs = os.path.relpath(abs_path, ROOT)
+                    enc_path = urlquote(rel_or_abs, safe='')
+                    iframe = f'<iframe src="/static?path={enc_path}" style="width:100%;height:80vh;border:1px solid #17343a;border-radius:10px;background:white"></iframe>'
+                    body = f'<div class="row"><a href="/">&larr; 戻る</a></div><div class="row">{iframe}</div>'
+                    return [render_html(body, title=rel_title)]
+                try:
+                    with open(abs_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                except Exception as e:
+                    # If decoding fails, fallback to binary delivery link
+                    enc_path = urlquote(os.path.relpath(abs_path, ROOT), safe='')
+                    body = (
+                        '<div class="row"><a href="/">&larr; 戻る</a></div>'
+                        f'<div class="row err">テキストとして開けませんでした: {e}</div>'
+                        f'<div class="row"><a href="/static?path={enc_path}">ダウンロード/表示</a></div>'
+                    )
+                    return [render_html(body, title=rel_title)]
+                body = f"<div class=\"row\"><a href=\"/\">&larr; 戻る</a></div>\n<pre>{content}</pre>"
+                return [render_html(body, title=rel_title)]
+            else:
+                # For images and other binaries, embed or link via /static
+                rel_or_abs = os.path.relpath(abs_path, ROOT)
+                enc_path = urlquote(rel_or_abs, safe='')
+                if mime and mime.startswith('image/'):
+                    img = f'<img src="/static?path={enc_path}" style="max-width:100%;height:auto;border:1px solid #17343a;border-radius:10px" />'
+                    body = f'<div class="row"><a href="/">&larr; 戻る</a></div><div class="row">{img}</div>'
+                else:
+                    body = (
+                        '<div class="row"><a href="/">&larr; 戻る</a></div>'
+                        f'<div class="row"><a class="btn" href="/static?path={enc_path}">ダウンロード/表示 ({mime or "binary"})</a></div>'
+                    )
+                return [render_html(body, title=rel_title)]
+
+        if method == 'GET' and path == '/static':
+            # Serve files under repo with content type; allow absolute outside ROOT by safe import
+            q = parse_qs(environ.get('QUERY_STRING') or '')
+            raw = (q.get('path') or [''])[0]
+            abs_path = _resolve_or_import_path(raw)
+            if not abs_path:
+                start_response('400 Bad Request', [('Content-Type', 'text/plain; charset=utf-8')])
+                return [b'Invalid path']
+            if not os.path.exists(abs_path):
+                start_response('404 Not Found', [('Content-Type', 'text/plain; charset=utf-8')])
+                return [b'Not found']
+            mime, _ = mimetypes.guess_type(abs_path)
+            if not mime:
+                mime = 'application/octet-stream'
+            try:
+                mode = 'rb'
+                with open(abs_path, mode) as f:
+                    data = f.read()
+            except Exception as e:
+                start_response('500 Internal Server Error', [('Content-Type', 'text/plain; charset=utf-8')])
+                return [f'Error reading file: {e}'.encode('utf-8')]
+            start_response('200 OK', [('Content-Type', mime)])
+            return [data]
+
+        # Absolute-path viewer is removed; only relative paths are supported under /view and /static
+
+        start_response('404 Not Found', [('Content-Type', 'text/plain; charset=utf-8')])
+        return [b'Not Found']
+    except Exception as e:
+        start_response('500 Internal Server Error', [('Content-Type', 'text/plain; charset=utf-8')])
+        return [f'Error: {e}'.encode('utf-8')]
+
+
+def main():
+    port = int(os.environ.get('PORT', '8000'))
+    with make_server('127.0.0.1', port, app) as httpd:
+        global SHUTDOWN_FN
+        SHUTDOWN_FN = httpd.shutdown
+        print(f"Serving on http://127.0.0.1:{port}")
+        httpd.serve_forever()
+
+
+if __name__ == '__main__':
+    main()

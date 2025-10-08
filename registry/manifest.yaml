@@ -1,0 +1,258 @@
+version: 0.1
+system: MVP_Factory
+display_name: "MVP Factory"
+description: "MVP制作プロセスを段階ゲートで進める多層オーケストレーション"
+language: "ja-JP"
+
+intent_recognizer:
+  id: intent_recognizer
+  display_name: "インテントレコグナイザー"
+  inputs:
+    - user_prompt
+    - attachments
+  outputs:
+    - stage_hint
+    - domain_entities
+    - missing_info
+  routing:
+    default_stage: 0
+    rules:
+      - when: "missing_info not empty"
+        action: "clarify_and_collect"
+  tools:
+    - text_classification
+    - ner_extractor
+    - file_type_detector
+
+orchestrators:
+  - id: supreme_orchestrator
+    display_name: "Supuremeオーケストレーター"
+    role: "全体統括・ゲート管理・逆戻り制御"
+    inputs:
+      - stage_hint
+      - artifacts.*
+    outputs:
+      - current_stage
+      - next_stage
+      - gate_report
+    policies:
+      gate_enforced: true
+      backtrack_on_fail: true
+      evidence_required: true
+    routes:
+      - from: 0
+        to: 1
+        when: "orchestrators.discovery.gate.passed"
+      - from: 1
+        to: 2
+        when: "orchestrators.problem_framing.gate.passed"
+      - from: 2
+        to: 3
+        when: "orchestrators.baseline.gate.passed"
+      - from: 3
+        to: 4
+        when: "orchestrators.usecase_decomp.gate.passed"
+      - from: 4
+        to: 5
+        when: "orchestrators.dor_data.gate.passed"
+      - from: 5
+        to: 6
+        when: "orchestrators.value_hypo.gate.passed"
+      - from: 6
+        to: 7
+        when: "orchestrators.feas_spike.gate.passed"
+    failure_routes:
+      - when: "!gate.passed"
+        action: "request_rework"
+        target: "previous_stage"
+
+  - id: discovery
+    stage: 0
+    display_name: "起点/棚卸統合"
+    purpose: "インプット束ね→候補3〜5件と粗いインパクト見込みを作成"
+    inputs: [process_ledger, system_landscape, data_samples]
+    exit_criteria:
+      - "候補件数 in [3..5]"
+      - "各候補に単位業務(1件)定義と主要KPI仮置きがある"
+    outputs: [candidate_list, coarse_impact_estimates]
+    agents:
+      - id: artifact_ingestor
+        capabilities: [doc_parsing, pdf_ocr_stub, csv_profile]
+      - id: landscape_mapper
+        capabilities: [system_dependency_graph, swimlane_stub]
+      - id: impact_estimator_coarse
+        capabilities: [time_error_risk_estimation]
+    tools: [pdf_ocr, csv_profiler, graph_builder]
+
+  - id: problem_framing
+    stage: 1
+    display_name: "課題定義"
+    purpose: "痛みを測れる日本語1文へ圧縮し合意"
+    exit_criteria:
+      - "現状/影響/理想/障壁/仮説の1文テンプレが埋まっている"
+      - "現場・情シス・管理の3者で文言合意ログあり"
+    outputs: [problem_statement, stakeholder_signoff]
+    agents:
+      - id: pain_point_extractor
+        capabilities: [statement_normalizer, kpi_linker]
+      - id: stakeholder_aligner
+        capabilities: [review_request, diff_highlighter]
+
+  - id: baseline
+    stage: 2
+    display_name: "ベースライン測定"
+    purpose: "現物データからKPI定義と現状値を確定"
+    exit_criteria:
+      - "KPI: 処理時間(中央値/95p), 誤登録率, 例外率, 再作業回数の定義・現状値"
+      - "計測方法に異議なし(承認ログ)"
+    outputs: [kpi_table, measurement_method]
+    agents:
+      - id: log_parser
+        capabilities: [timestamp_diff, percentile_calc]
+      - id: metric_calculator
+        capabilities: [ratio_calc, aggregation]
+      - id: table_builder
+        capabilities: [artifact_table_emit]
+    tools: [csv_profiler, stats_engine]
+
+  - id: usecase_decomp
+    stage: 3
+    display_name: "ユースケース分解"
+    purpose: "標準/例外を分け、1件のI/Oと泳線図を固定"
+    exit_criteria:
+      - "標準ケース定義あり"
+      - "例外カテゴリ(フォーマット/欠損/読取不可)列挙"
+    outputs: [swimlane, io_contract, exception_categories]
+    agents:
+      - id: swimlane_generator
+        capabilities: [role_activity_map, sequence_draft]
+      - id: exception_classifier
+        capabilities: [pattern_mining, taxonomy_emit]
+
+  - id: dor_data
+    stage: 4
+    display_name: "データDoR"
+    purpose: "現物10〜20種で差異・機微を棚卸しPoC可否を確認"
+    exit_criteria:
+      - "\"この現物でPoCできる\"の承認"
+      - "不足はToDoに落とし込み"
+    outputs: [dor_checklist, pii_inventory, gap_todos, dor_approval]
+    agents:
+      - id: data_inventory
+        capabilities: [schema_diff, format_variance]
+      - id: pii_detector
+        capabilities: [pii_type_detect, mask_policy_recommend]
+
+  - id: value_hypo
+    stage: 5
+    display_name: "価値仮説＆効果試算"
+    purpose: "工数/誤登録コストの削減を試算し下限でもROI+"
+    exit_criteria:
+      - "時間削減式に基づく月間効果"
+      - "誤登録コストの金額換算"
+      - "下限シナリオでもプラス、閾値明示"
+    outputs: [value_model, sensitivity_sheet, roi_thresholds]
+    agents:
+      - id: time_savings_modeler
+        capabilities: [scenario_model, ci_bounds]
+      - id: cost_modeler
+        capabilities: [error_cost_calc]
+
+  - id: feas_spike
+    stage: 6
+    display_name: "フィージビリティ・スパイク"
+    purpose: "技術/運用/規程リスクを短スパイクで検証"
+    exit_criteria:
+      - "OCR耐性(サンプル10種, F1目安, 低信頼しきい値)"
+      - "連携実験(ダミーCSV入出力/戻り値/エラーコード)"
+      - "RBAC/監査ログの最小要件合意"
+    outputs: [risk_register, mitigations, spike_reports]
+    agents:
+      - id: ocr_spike
+        capabilities: [confidence_thresholding, sample_eval]
+      - id: integration_spike
+        capabilities: [dummy_io, error_code_map]
+      - id: rbac_audit
+        capabilities: [role_matrix, audit_key_check]
+
+  - id: slice_selection
+    stage: 7
+    display_name: "候補スライス比較とMVP決定"
+    purpose: "価値/容易性/リスクをスコアしMVP範囲を確定"
+    exit_criteria:
+      - "上位1件に前提・除外・KPIを付した草案"
+    outputs: [scorecard, mvp_scope_brief, decision_log]
+    agents:
+      - id: scoring_agent
+        capabilities: [multi_criteria_score, tie_break]
+      - id: mvp_scope_writer
+        capabilities: [assumptions_exclusions_kpi_brief]
+
+agents_common:
+  toolbelt:
+    - text_summarizer
+    - pdf_ocr
+    - csv_profiler
+    - stats_engine
+    - diagram_stub
+    - reviewer
+  quality:
+    - evidence_linker
+    - assumption_tracker
+    - change_log
+
+artifacts:
+  - id: candidate_list
+    schema: { name: string, unit_of_work: string, primary_kpis: [string], impact_estimate: { time: string, error: string, risk: string } }
+  - id: problem_statement
+    schema: { current: string, impact: { time_h: number, yen: number, error_pct: number }, ideal: string, barrier: string, hypothesis: string }
+  - id: kpi_table
+    schema: { metrics: [ { name: string, definition: string, current: string, source: string, frequency: string } ] }
+  - id: swimlane
+    schema: { actors: [string], steps: [ { actor: string, action: string, input: string, output: string } ] }
+  - id: io_contract
+    schema: { input_fields: [string], output_fields: [string], golden_record: string }
+  - id: exception_categories
+    schema: { categories: [string] }
+  - id: dor_checklist
+    schema: { format_diversity: string, required_fields: string, key_integrity: string }
+  - id: pii_inventory
+    schema: { pii_types: [string], masking_policy: string, retention: string }
+  - id: value_model
+    schema: { baseline_min_per_case: number, target_min_per_case: number, volume_per_month: number, savings_hours_per_month: number }
+  - id: sensitivity_sheet
+    schema: { scenarios: [ { name: string, savings_hours: number, roi: number } ] }
+  - id: risk_register
+    schema: { items: [ { risk: string, type: string, severity: string, prevention: string, correction: string } ] }
+  - id: scorecard
+    schema: { candidates: [ { name: string, value_5: number, ease_5: number, risk_5: number, total: number } ] }
+  - id: mvp_scope_brief
+    schema: { slice: string, assumptions: [string], exclusions: [string], kpis: [string] }
+
+routing_policies:
+  - id: gate_check
+    rule: "all(orchestrator.exit_criteria) must be evidenced in artifacts"
+  - id: rework_request
+    rule: "if gate failed -> notify owners and open todos"
+
+human_in_the_loop:
+  approvals:
+    - stage: 1
+      approvers: ["現場", "情シス", "管理"]
+    - stage: 4
+      approvers: ["PoC責任者"]
+    - stage: 7
+      approvers: ["事業責任者"]
+  checkpoints:
+    - stage: [2, 5, 6]
+
+observability:
+  logs:
+    - gate_reports
+    - decision_logs
+    - assumption_changes
+  metrics:
+    - lead_time_per_stage
+    - rework_cycles
+    - gate_pass_rate
+

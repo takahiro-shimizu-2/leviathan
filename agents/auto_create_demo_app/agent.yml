@@ -1,0 +1,10 @@
+version: v0
+agent_id: auto_create_demo_app
+model: gpt-4o-mini
+temperature: 0.2
+capabilities:
+  - plan
+  - tools
+tools_scopes: []
+allow_network: false
+allow_write: false
