@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+import os
+import sys
+import time
+import atexit
+import signal
+import argparse
+import subprocess
+from urllib.request import urlopen, Request
+from urllib.error import URLError
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+
+def wait_http(url: str, timeout_sec: int = 30) -> bool:
+    start = time.time()
+    while time.time() - start < timeout_sec:
+        try:
+            req = Request(url, headers={'User-Agent': 'run_local/1.0'})
+            with urlopen(req, timeout=2) as _:
+                return True
+        except URLError:
+            time.sleep(0.5)
+        except Exception:
+            time.sleep(0.5)
+    return False
+
+
+def main():
+    ap = argparse.ArgumentParser(description='Run user UI and dev dashboard together (local).')
+    ap.add_argument('--port', type=int, default=8000, help='User UI port (agi_web) [8000]')
+    ap.add_argument('--dev-port', type=int, default=8010, help='Dev dashboard port [8010]')
+    ap.add_argument('--open', dest='open_browser', action='store_true', help='Open browsers after start')
+    ap.add_argument('--no-open', dest='open_browser', action='store_false', help='Do not open browsers')
+    ap.add_argument('--token', default='', help='DEV_DASHBOARD_TOKEN to export for dev dashboard')
+    ap.add_argument('--fresh', action='store_true', help='Kill existing processes on the ports before starting')
+    ap.set_defaults(open_browser=False)
+    args = ap.parse_args()
+
+    ui_env = os.environ.copy()
+    ui_env['PORT'] = str(args.port)
+    dev_env = os.environ.copy()
+    dev_env['DEV_DASHBOARD_PORT'] = str(args.dev_port)
+    if args.token:
+        dev_env['DEV_DASHBOARD_TOKEN'] = args.token
+
+    os.makedirs(os.path.join(ROOT, 'tmp'), exist_ok=True)
+    ui_log = open(os.path.join(ROOT, 'tmp', 'agi_web.out'), 'a', buffering=1)
+    dev_log = open(os.path.join(ROOT, 'tmp', 'dev_dashboard.out'), 'a', buffering=1)
+
+    procs = []
+
+    def cleanup():
+        for p in procs:
+            try:
+                p.terminate()
+            except Exception:
+                pass
+        # give them a moment
+        deadline = time.time() + 5
+        for p in procs:
+            try:
+                remaining = max(0, deadline - time.time())
+                p.wait(timeout=remaining)
+            except Exception:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+        try:
+            ui_log.close()
+        except Exception:
+            pass
+        try:
+            dev_log.close()
+        except Exception:
+            pass
+
+    atexit.register(cleanup)
+
+    ui_cmd = [sys.executable, os.path.join(ROOT, 'bin', 'agi_web')]
+    dev_cmd = [sys.executable, os.path.join(ROOT, 'bin', 'dev_dashboard.py')]
+
+    # If something is already listening on UI port, reuse it instead of spawning another
+    # Optionally kill existing listeners
+    if args.fresh:
+        try:
+            import subprocess as sp
+            pids = sp.check_output(['bash','-lc', f"lsof -ti tcp:{args.port} || true"]).decode().strip().splitlines()
+            for pid in pids:
+                if pid:
+                    os.kill(int(pid), 15)
+                    time.sleep(0.2)
+        except Exception:
+            pass
+    reused_ui = wait_http(f"http://127.0.0.1:{args.port}/", timeout_sec=2)
+    if reused_ui:
+        print(f"Detected existing UI on http://127.0.0.1:{args.port}/ (reuse)")
+        ui_p = None
+    else:
+        print(f"Starting user UI on http://127.0.0.1:{args.port} ...")
+        ui_p = subprocess.Popen(ui_cmd, cwd=ROOT, env=ui_env, stdout=ui_log, stderr=subprocess.STDOUT)
+        procs.append(ui_p)
+        if not wait_http(f"http://127.0.0.1:{args.port}/", timeout_sec=30):
+            print("[warn] UI did not respond within 30s. Check tmp/agi_web.out")
+        else:
+            print("UI is up.")
+
+    # If dev port is already in use, do not spawn another
+    if args.fresh:
+        try:
+            import subprocess as sp
+            pids = sp.check_output(['bash','-lc', f"lsof -ti tcp:{args.dev_port} || true"]).decode().strip().splitlines()
+            for pid in pids:
+                if pid:
+                    os.kill(int(pid), 15)
+                    time.sleep(0.2)
+        except Exception:
+            pass
+    reused_dev = wait_http(f"http://127.0.0.1:{args.dev_port}/", timeout_sec=2)
+    if reused_dev:
+        print(f"Detected existing dev dashboard on http://127.0.0.1:{args.dev_port}/ (reuse)")
+        dev_p = None
+    else:
+        print(f"Starting dev dashboard on http://127.0.0.1:{args.dev_port} ...")
+        dev_p = subprocess.Popen(dev_cmd, cwd=ROOT, env=dev_env, stdout=dev_log, stderr=subprocess.STDOUT)
+        procs.append(dev_p)
+        if not wait_http(f"http://127.0.0.1:{args.dev_port}/", timeout_sec=30):
+            print("[warn] Dev dashboard did not respond within 30s. Check tmp/dev_dashboard.out")
+        else:
+            print("Dev dashboard is up.")
+
+    print("")
+    print("Open these in your browser:")
+    print(f"  - User UI: http://127.0.0.1:{args.port}/")
+    print(f"  - Dev Dashboard: http://127.0.0.1:{args.dev_port}/")
+
+    if args.open_browser:
+        try:
+            import webbrowser
+            webbrowser.open_new_tab(f"http://127.0.0.1:{args.port}/")
+            webbrowser.open_new_tab(f"http://127.0.0.1:{args.dev_port}/")
+        except Exception as e:
+            print(f"[warn] Could not open browser automatically: {e}")
+
+    print("\nPress Ctrl+C to stop both.")
+
+    # Wait until one of processes exits, or Ctrl+C
+    def handle_sigint(sig, frame):
+        raise KeyboardInterrupt()
+    signal.signal(signal.SIGINT, handle_sigint)
+
+    try:
+        while True:
+            rc1 = (ui_p.poll() if ui_p else None)
+            rc2 = (dev_p.poll() if dev_p else None)
+            if rc1 is not None:
+                print(f"[exit] UI process ended with code {rc1}")
+                break
+            if rc2 is not None:
+                print(f"[exit] Dev dashboard process ended with code {rc2}")
+                break
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print("\nStopping...")
+
+
+if __name__ == '__main__':
+    main()

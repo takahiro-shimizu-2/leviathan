@@ -1,0 +1,30 @@
+{
+  "version": "v0",
+  "intent_id": "create_spec_document",
+  "description": "自動生成テンプレ",
+  "agent_requirements": [],
+  "inputs": [
+    {
+      "name": "query",
+      "type": "string"
+    }
+  ],
+  "steps": [],
+  "outputs": [
+    {
+      "path": "runs/{run_id}/SPEC.md"
+    }
+  ],
+  "success_criteria": [
+    "SPEC.md が生成される",
+    "以下の節がすべて含まれる: 目的, 非目標, 機能一覧, ユースケース, 画面要件, API 仕様, データモデル, 受入条件",
+    "API 仕様の表に Method と Path 列が存在する",
+    "データモデルにエンティティ定義が3件以上、各に属性が3件以上",
+    "ユースケースが3件以上（各に基本フロー/代替フロー/例外が記載）",
+    "受入条件が3件以上"
+  ],
+  "timeout_s": 60,
+  "safety": {
+    "allowed_ops": []
+  }
+}

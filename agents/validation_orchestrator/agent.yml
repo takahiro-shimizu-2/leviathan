@@ -1,0 +1,18 @@
+agent_id: validation_orchestrator
+version: 0.1.0
+description: "成果物の自動検証とゲート判定（lint/test/coverage/受入条件）を行うオーケストレーター"
+capabilities:
+  - validator
+  - quality_gate
+supported_tools:
+  - filesystem:read
+  - filesystem:write
+limits:
+  timeout_sec: 180
+entry:
+  type: cli
+  command: validation_orchestrator_cli
+  args:
+    - "--run_id"
+    - "{run_id}"
+

@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import sys
+import time
+
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+from yaml_min import load as yaml_load
+
+
+def ensure_dir(p):
+    os.makedirs(p, exist_ok=True)
+
+
+def render_spec_md(user_input, style: str = "default"):
+    now = time.strftime('%Y-%m-%d %H:%M')
+    lines = []
+    if style == "detailed":
+        lines.append("# MVP仕様書（詳細版・自動生成）")
+        lines.append("")
+        lines.append(f"生成時刻: {now}")
+        lines.append("")
+        # 目的 / 非目標
+        lines.append("## 目的")
+        lines.append(f"- 入力: {user_input}")
+        lines.append("- ユーザー指示を満たす最小の価値を出す")
+        lines.append("")
+        lines.append("## 非目標")
+        lines.append("- 不要な最適化、外部SaaS依存、過度な自動化")
+        lines.append("")
+        # 機能一覧
+        lines.append("## 機能一覧")
+        lines.append("| ID | 機能 | 優先度 | 概要 |")
+        lines.append("|----|------|--------|------|")
+        for i in range(1, 6):
+            lines.append(f"| F{i:02d} | 基本機能{i} | P{i if i<=3 else 3} | {user_input}の主要操作{i} |")
+        lines.append("")
+        # ユースケース
+        lines.append("## ユースケース")
+        for i in range(1, 4):
+            lines.append(f"### UC-{i:02d} {user_input}のユースケース{i}")
+            lines.append("- 目的: 対象ユーザーが価値を得る")
+            lines.append("- 事前条件: ログイン済み")
+            lines.append("- 事後条件: データが保存される")
+            lines.append("- 基本フロー:")
+            lines.append("  1. 画面を開く\n  2. 入力する\n  3. 実行する\n  4. 結果を確認")
+            lines.append("- 代替フロー:")
+            lines.append("  1. 入力誤り→エラー表示→再入力")
+            lines.append("- 例外:")
+            lines.append("  - ネットワークエラー→リトライ案内")
+            lines.append("")
+        # 画面要件
+        lines.append("## 画面要件")
+        lines.append("| 画面ID | 名称 | 主な要素 | 遷移 | バリデーション |")
+        lines.append("|--------|------|----------|------|--------------|")
+        lines.append("| S01 | ホーム | 検索欄/一覧/CTA | なし→詳細 | 必須入力/最大長 |")
+        lines.append("| S02 | 詳細 | 明細/操作ボタン | 戻る→ホーム | 範囲/形式 |")
+        lines.append("")
+        # API 仕様
+        lines.append("## API 仕様")
+        lines.append("| Method | Path | 説明 | Request | Response | Error | 権限 |")
+        lines.append("|--------|------|------|---------|----------|-------|------|")
+        lines.append("| GET | /api/items | 一覧取得 | query:q | 200:items[] | 400/500 | user |")
+        lines.append("| POST | /api/items | 追加 | body:{name} | 201:item | 400/409 | user |")
+        lines.append("")
+        # データモデル
+        lines.append("## データモデル")
+        lines.append("### エンティティ一覧")
+        lines.append("| エンティティ | 説明 | 関係 |")
+        lines.append("|--------------|------|------|")
+        lines.append("| Item | アイテム | User(多:1) |")
+        lines.append("| User | 利用者 | Item(1:多) |")
+        lines.append("| Audit | 監査ログ | User(多:1) |")
+        lines.append("")
+        lines.append("#### Item の属性")
+        lines.append("| 属性 | 型 | 制約 | 索引 |")
+        lines.append("|------|----|------|------|")
+        lines.append("| id | uuid | PK | 主キー |")
+        lines.append("| name | string | 必須/最大100 | 部分一致 |")
+        lines.append("| owner_id | uuid | FK→User.id | 外部キー |")
+        lines.append("")
+        lines.append("#### User の属性")
+        lines.append("| 属性 | 型 | 制約 | 索引 |")
+        lines.append("|------|----|------|------|")
+        lines.append("| id | uuid | PK | 主キー |")
+        lines.append("| email | string | 一意/必須 | メール |")
+        lines.append("| name | string | 必須 | 前方一致 |")
+        lines.append("")
+        lines.append("## 受入条件")
+        lines.append("- 一覧取得で件数0/複数を正しく表示できる")
+        lines.append("- 追加APIは必須項目不足で400、正常で201を返す")
+        lines.append("- 監査ログに操作が記録される")
+        lines.append("")
+        lines.append("## メモ/未決事項")
+        lines.append("- 権限モデルの詳細は次フェーズで確定")
+        return "\n".join(lines)
+    else:
+        # 既存の簡易版（後方互換）
+        title = "# MVP仕様書（自動生成）" if style == "default" else "# MVP仕様書（簡潔版）"
+        lines.append(title)
+        lines.append("")
+        if style != "alt_no_time":
+            lines.append(f"生成時刻: {now}")
+        lines.append("")
+        lines.append("## 目的")
+        lines.append(f"- 入力: {user_input}")
+        lines.append("- ユーザー指示を満たす最小の仕様を作成する")
+        lines.append("")
+        lines.append("## 非目標")
+        lines.append("- 高精度NLP、外部ネットワーク依存、過度な最適化")
+        lines.append("")
+        lines.append("## フロー")
+        if style == "alt":
+            lines.append("- 入力→インテント→レジストリ→ルーティング→エージェント→成果物")
+        else:
+            lines.append("- 入力→インテント→YAML→エージェント→成果物")
+        lines.append("")
+        lines.append("## データモデル")
+        lines.append("- Intent YAML: inputs/steps/tools/success_criteria")
+        lines.append("- Agent Spec: capabilities/entry")
+        lines.append("")
+        return "\n".join(lines)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--yaml', required=True)
+    ap.add_argument('--input', required=True)
+    ap.add_argument('--run_id', required=True)
+    ap.add_argument('--style', default='default')
+    args = ap.parse_args()
+
+    intent = yaml_load(args.yaml)
+    outputs = intent.get('outputs') or []
+    out_path = None
+    if outputs:
+        first = outputs[0]
+        if isinstance(first, dict) and 'path' in first:
+            out_path = first['path']
+    if not out_path:
+        print('No output path defined in intent.', file=sys.stderr)
+        return 2
+
+    out_path = out_path.replace('{run_id}', args.run_id)
+    out_abs = os.path.join(os.path.dirname(os.path.dirname(__file__)), out_path)
+    ensure_dir(os.path.dirname(out_abs))
+
+    # Based on intent, generate content
+    intent_id = intent.get('intent_id')
+    content = ''
+    if intent_id == 'create_spec_document':
+        content = render_spec_md(args.input, style=args.style)
+        with open(out_abs, 'w', encoding='utf-8') as f:
+            f.write(content)
+        print(out_path)
+        return 0
+    elif intent_id == 'create_demo_app':
+        # Generate minimal static demo scaffold with mock data
+        demo_dir = os.path.dirname(out_abs)
+        files = render_demo_scaffold(args.input)
+        for name, body in files.items():
+            p = os.path.join(demo_dir, name)
+            ensure_dir(os.path.dirname(p))
+            with open(p, 'w', encoding='utf-8') as f:
+                f.write(body)
+        # Write deploy_info.json for UI linking
+        try:
+            run_dir = os.path.dirname(os.path.dirname(demo_dir)) if demo_dir.endswith('/demo') or demo_dir.endswith('\\demo') else os.path.dirname(os.path.dirname(out_abs))
+            art_dir = os.path.join(run_dir, 'artifacts')
+            ensure_dir(art_dir)
+            import json as _json
+            deploy = {
+                "env": "local",
+                "url": f"/static?path=" + os.path.relpath(os.path.join(run_dir, 'demo', 'index.html'), os.path.dirname(os.path.dirname(__file__)))
+            }
+            with open(os.path.join(art_dir, 'deploy_info.json'), 'w', encoding='utf-8') as jf:
+                _json.dump(deploy, jf, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+        print(out_path)
+        return 0
+    else:
+        # Generic content
+        content = f"# 自動生成出力\n\n入力: {args.input}\n\nこの出力はMVPのデフォルトエージェントにより生成されました。\n"
+        with open(out_abs, 'w', encoding='utf-8') as f:
+            f.write(content)
+        print(out_path)
+        return 0
+
+
+def render_demo_scaffold(user_input: str) -> dict:
+    """Return file map for a minimal static demo with mock data.
+
+    Files:
+    - index.html
+    - style.css
+    - app.js (includes inline mock data)
+    """
+    title = f"Demo: {user_input[:40]}" if user_input else "Demo"
+    index_html = f"""<!doctype html>
+<html lang=\"ja\">
+<head>
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <title>{title}</title>
+  <link rel=\"stylesheet\" href=\"./style.css\" />
+  <style>/* critical */ body{{visibility:visible}}</style>
+  </head>
+<body>
+  <header class=\"top\"><h2>{title}</h2><div class=\"muted\">モックデータ付き（ローカルのみ）</div></header>
+  <main id=\"app\" class=\"frame\">
+    <section class=\"row\">
+      <label class=\"lbl\">検索</label>
+      <input id=\"q\" type=\"text\" placeholder=\"キーワード\" />
+    </section>
+    <section class=\"row\">
+      <label class=\"lbl\">アイテム追加</label>
+      <div class=\"hstack\">
+        <input id=\"name\" type=\"text\" placeholder=\"名前\" />
+        <button id=\"add\">追加</button>
+      </div>
+    </section>
+    <section class=\"row\">
+      <div class=\"lbl\">一覧</div>
+      <table class=\"table\">
+        <thead><tr><th>ID</th><th>名前</th><th>状態</th><th>作成</th></tr></thead>
+        <tbody id=\"list\"></tbody>
+      </table>
+    </section>
+  </main>
+  <script src=\"./app.js\"></script>
+  </body>
+  </html>"""
+
+    style_css = """
+:root{--bg:#0b161a;--fg:#daf0f3;--mut:#7aa5ac;--accent:#0ea5a6}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif}
+.top{max-width:960px;margin:20px auto 8px;padding:0 8px}
+.top h2{margin:0 0 2px}.muted{color:var(--mut)}
+.frame{max-width:960px;margin:0 auto;background:#0e1c21;border:1px solid #17343a;border-radius:12px;padding:16px 16px 6px}
+.row{margin:12px 4px}
+.lbl{font-size:13px;color:#b6d0d3;margin-bottom:6px;display:block}
+input[type=text]{width:100%;border:1px solid #1a343b;background:#0b171b;color:var(--fg);border-radius:8px;padding:10px 12px}
+.hstack{display:flex;gap:8px}
+button{background:var(--accent);color:#053234;border:0;border-radius:8px;padding:10px 14px;font-weight:600}
+.table{width:100%;border-collapse:collapse}
+.table th,.table td{border-bottom:1px solid #17343a;padding:8px;text-align:left}
+""".strip()
+
+    app_js = """
+// Mock data (in-memory)
+const MOCK_ITEMS = [
+  { id: 1, name: 'サンプルA', status: 'active', created_at: '2025-01-01' },
+  { id: 2, name: 'サンプルB', status: 'inactive', created_at: '2025-02-14' },
+  { id: 3, name: 'テストC', status: 'active', created_at: '2025-03-03' },
+];
+
+let items = [...MOCK_ITEMS];
+
+function render(list){
+  const tbody = document.getElementById('list');
+  tbody.innerHTML = list.map(r => `<tr><td>${r.id}</td><td>${r.name}</td><td>${r.status}</td><td>${r.created_at}</td></tr>`).join('');
+}
+
+function filter(){
+  const q = document.getElementById('q').value.trim();
+  const filtered = q ? items.filter(x => x.name.includes(q) || String(x.id).includes(q)) : items;
+  render(filtered);
+}
+
+function addItem(){
+  const name = document.getElementById('name').value.trim();
+  if(!name) return;
+  const id = items.length ? Math.max(...items.map(x=>x.id))+1 : 1;
+  const now = new Date();
+  const created_at = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+  items = [{ id, name, status: 'active', created_at }, ...items];
+  document.getElementById('name').value='';
+  filter();
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('q').addEventListener('input', filter);
+  document.getElementById('add').addEventListener('click', addItem);
+  render(items);
+});
+""".strip()
+
+    return {
+        "index.html": index_html,
+        "style.css": style_css,
+        "app.js": app_js,
+    }
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

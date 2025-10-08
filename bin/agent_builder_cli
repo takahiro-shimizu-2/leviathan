@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import sys
+import json
+
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+from yaml_min import load as yaml_load
+
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+
+def ensure_dir(p):
+    os.makedirs(p, exist_ok=True)
+
+
+def write(path, content):
+    ensure_dir(os.path.dirname(path))
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+
+def register_agent(agent_id, path_rel, capabilities):
+    reg_path = os.path.join(ROOT, 'registry', 'agents.json')
+    ensure_dir(os.path.dirname(reg_path))
+    data = {"agents": []}
+    if os.path.exists(reg_path):
+        try:
+            with open(reg_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception:
+            data = {"agents": []}
+    data.setdefault('agents', [])
+    # check duplicate
+    for a in data['agents']:
+        if a.get('agent_id') == agent_id:
+            a['path'] = path_rel
+            a['capabilities'] = capabilities
+            break
+    else:
+        data['agents'].append({
+            'agent_id': agent_id,
+            'path': path_rel,
+            'capabilities': capabilities,
+        })
+    with open(reg_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def main():
+    ap = argparse.ArgumentParser(description='Agent Builder CLI (MVP)')
+    ap.add_argument('--blueprint', required=True)
+    args = ap.parse_args()
+
+    bp = yaml_load(args.blueprint)
+    target = bp.get('target_agent') or {}
+    agent_id = target.get('agent_id')
+    capabilities = target.get('capabilities') or []
+    if not agent_id:
+        print('Blueprint missing target_agent.agent_id', file=sys.stderr)
+        return 2
+
+    agent_dir_rel = os.path.join('agents', agent_id)
+    agent_dir = os.path.join(ROOT, agent_dir_rel)
+    ensure_dir(agent_dir)
+
+    # Create agent.yml
+    agent_yml = f"""
+agent_id: {agent_id}
+version: 0.1.0
+description: "Auto-generated agent from blueprint"
+capabilities:
+""".lstrip()
+    for c in capabilities:
+        agent_yml += f"  - {c}\n"
+    agent_yml += "supported_tools:\n  - filesystem:read\n  - filesystem:write\nlimits:\n  timeout_sec: 300\nentry:\n  type: cli\n  command: agent_cli\n  args:\n    - \"--yaml\"\n    - \"{yaml}\"\n    - \"--input\"\n    - \"{input}\"\n    - \"--run_id\"\n    - \"{run_id}\"\n"
+    write(os.path.join(agent_dir, 'agent.yml'), agent_yml)
+
+    # Create main.py placeholder
+    main_py = """
+def run():
+    print("This is a placeholder agent. Execution is delegated to bin/agent_cli.")
+""".lstrip()
+    write(os.path.join(agent_dir, 'main.py'), main_py)
+
+    register_agent(agent_id, agent_dir_rel, capabilities)
+    print(f"Agent generated: {agent_dir_rel}")
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
+

@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import sys
+import json
+
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+from agi_poc.util import project_root  # type: ignore
+from agi_poc.runner import execute_with_retry  # type: ignore
+
+
+def _project_root() -> str:
+    return project_root(os.path.dirname(__file__))
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description='Execution Orchestrator CLI')
+    ap.add_argument('--run_id', required=True)
+    args = ap.parse_args()
+
+    root = _project_root()
+    run_dir = os.path.join(root, 'runs', args.run_id)
+    intent_json = os.path.join(run_dir, 'intent.yml')
+    agent_json = os.path.join(run_dir, 'agent.yml')
+    plan_json = os.path.join(run_dir, 'plan.json')
+
+    if not (os.path.exists(intent_json) and os.path.exists(agent_json)):
+        print('Missing intent.yml or agent.yml in run directory. Run planning first.', file=sys.stderr)
+        return 2
+
+    try:
+        with open(intent_json, 'r', encoding='utf-8') as f:
+            intent_spec = json.load(f)
+        with open(agent_json, 'r', encoding='utf-8') as f:
+            agent_spec = json.load(f)
+    except Exception as e:
+        print(f'Failed to load run specs: {e}', file=sys.stderr)
+        return 3
+
+    user_input = ''
+    if os.path.exists(plan_json):
+        try:
+            with open(plan_json, 'r', encoding='utf-8') as f:
+                plan = json.load(f)
+            user_input = plan.get('user_input') or ''
+        except Exception:
+            pass
+
+    intent_id = (intent_spec.get('intent_id') or '').strip()
+    if not intent_id:
+        print('intent_id missing in intent.yml', file=sys.stderr)
+        return 4
+
+    intent_yaml_path = os.path.join(root, 'intents', f'{intent_id}.yml')
+    if not os.path.exists(intent_yaml_path):
+        # Try .yaml extension as fallback
+        alt = os.path.join(root, 'intents', f'{intent_id}.yaml')
+        if os.path.exists(alt):
+            intent_yaml_path = alt
+        else:
+            print(f'Intent YAML not found for {intent_id}', file=sys.stderr)
+            return 5
+
+    timeout_s = intent_spec.get('timeout_s')
+    rc = execute_with_retry(
+        intent_yaml_path=intent_yaml_path,
+        user_request=user_input,
+        run_id=args.run_id,
+        run_dir=run_dir,
+        timeout_s=timeout_s if isinstance(timeout_s, int) else None,
+        retries=0,
+        agent_spec=agent_spec,
+    )
+    if rc == 0:
+        # Print path to primary artifact if known
+        outputs = intent_spec.get('outputs') or []
+        if outputs and isinstance(outputs[0], dict) and outputs[0].get('path'):
+            out_rel = outputs[0]['path'].replace('{run_id}', args.run_id)
+            print(out_rel)
+        return 0
+    else:
+        print(f'Execution failed with rc={rc}', file=sys.stderr)
+        return rc
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
+

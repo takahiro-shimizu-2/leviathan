@@ -1,0 +1,10 @@
+{
+  "agents": [
+    {
+      "agent_id": "agent_create_spec_document",
+      "path": "agents/spec_writer",
+      "capabilities": ["spec_generation", "markdown_writer", "file_writer"]
+    }
+  ]
+}
+

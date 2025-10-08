@@ -1,0 +1,19 @@
+agent_id: execution_orchestrator
+version: 0.1.0
+description: "計画に基づき選定済みエージェントを実行し、成果物を生成するオーケストレーター"
+capabilities:
+  - agent_execute
+  - retry_policy
+  - artifact_emit
+supported_tools:
+  - filesystem:read
+  - filesystem:write
+limits:
+  timeout_sec: 600
+entry:
+  type: cli
+  command: execution_orchestrator_cli
+  args:
+    - "--run_id"
+    - "{run_id}"
+

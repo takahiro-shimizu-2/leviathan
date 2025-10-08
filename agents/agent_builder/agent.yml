@@ -1,0 +1,24 @@
+agent_id: agent_builder
+version: 0.1.0
+description: "Agent Blueprint YAML からエージェント実装をスキャフォールドし自己検証後に登録するビルダー"
+capabilities:
+  - agent_builder
+  - scaffolder
+  - tester
+supported_tools:
+  - filesystem:read
+  - filesystem:write
+limits:
+  timeout_sec: 600
+entry:
+  type: cli
+  command: agent_builder_cli
+  args:
+    - "--blueprint"
+    - "{blueprint}"
+self_test:
+  smoke:
+    - "agent_builder_cli --blueprint blueprints/create_agent_for_create_spec_document.yml"
+  expectations:
+    - "agents/agent_create_spec_document/ 配下の雛形が生成される"
+

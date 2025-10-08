@@ -1,0 +1,21 @@
+agent_id: yaml_autogen
+version: 0.1.0
+description: "テンプレ/既存資産からIntent/Agent YAMLの不足項目を合成生成し、軽量検証するオーケストレーター"
+capabilities:
+  - yaml_synthesis
+  - templating
+  - validator
+  - agent_spec_patch
+supported_tools:
+  - filesystem:read
+  - filesystem:write
+limits:
+  timeout_sec: 240
+entry:
+  type: cli
+  command: yaml_autogen_cli
+  args:
+    - "--intent_yaml"
+    - "{yaml}"
+    - "--run_id"
+    - "{run_id}"

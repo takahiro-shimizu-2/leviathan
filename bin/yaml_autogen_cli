@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import sys
+import json
+
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+from yaml_min import load as yaml_load  # type: ignore
+from agi_poc.schemas import normalize_task_yaml, validate_task_yaml  # type: ignore
+from agi_poc.registry import agent_registry  # type: ignore
+from agi_poc.util import project_root  # type: ignore
+
+
+def _project_root() -> str:
+    return project_root(os.path.dirname(__file__))
+
+
+def _ensure_dir(p: str) -> None:
+    os.makedirs(p, exist_ok=True)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description='YAML Autogen CLI')
+    ap.add_argument('--intent_yaml', required=True, help='Path to intent YAML')
+    ap.add_argument('--run_id', required=True)
+    args = ap.parse_args()
+
+    root = _project_root()
+    intent_path = args.intent_yaml
+    if not os.path.isabs(intent_path):
+        intent_path = os.path.join(root, intent_path)
+
+    try:
+        intent_spec = yaml_load(intent_path)
+    except Exception as e:
+        print(f"Failed to load intent YAML: {e}", file=sys.stderr)
+        return 2
+
+    intent_spec = normalize_task_yaml(intent_spec)
+    ok, msg = validate_task_yaml(intent_spec)
+    if not ok:
+        print(f"Invalid intent YAML: {msg}", file=sys.stderr)
+        return 3
+
+    intent_id = intent_spec.get('intent_id') or 'generic_task'
+    reqs = intent_spec.get('agent_requirements') or []
+    # Ensure an agent spec exists for this intent (generate if missing)
+    agent_path, agent_spec = agent_registry.select_or_generate(reqs, intent_id)
+
+    # Persist normalized intent and generated agent spec snapshot under runs/<run_id>
+    run_dir = os.path.join(root, 'runs', args.run_id)
+    _ensure_dir(run_dir)
+    with open(os.path.join(run_dir, 'intent.yml'), 'w', encoding='utf-8') as f:
+        json.dump(intent_spec, f, ensure_ascii=False, indent=2)
+    with open(os.path.join(run_dir, 'agent.yml'), 'w', encoding='utf-8') as f:
+        json.dump(agent_spec, f, ensure_ascii=False, indent=2)
+
+    print(os.path.relpath(agent_path, root))
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
+

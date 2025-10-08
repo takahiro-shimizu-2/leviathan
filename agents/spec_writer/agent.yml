@@ -1,0 +1,30 @@
+agent_id: agent_create_spec_document
+version: 0.1.0
+description: "Intent 'create_spec_document' に基づき仕様書(SPEC.md)を生成するエージェント"
+capabilities:
+  - spec_generation
+  - markdown_writer
+  - file_writer
+supported_tools:
+  - filesystem:read
+  - filesystem:write
+  - writer:markdown
+limits:
+  timeout_sec: 300
+entry:
+  type: cli
+  command: agent_cli
+  args:
+    - "--yaml"
+    - "{yaml}"
+    - "--input"
+    - "{input}"
+    - "--run_id"
+    - "{run_id}"
+    - "--style"
+    - "detailed"
+self_test:
+  smoke:
+    - "agent_cli --yaml intents/create_spec_document.yml --input 'テスト依頼' --run_id test"
+  expectations:
+    - "runs/test/SPEC.md が生成される"

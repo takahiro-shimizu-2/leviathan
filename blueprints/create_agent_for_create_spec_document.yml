@@ -1,0 +1,29 @@
+intent_id: create_agent_for_create_spec_document
+version: 0.1.0
+description: "Intent 'create_spec_document' に適合するエージェントを生成するBlueprint"
+target_agent:
+  agent_id: agent_create_spec_document
+  capabilities: [spec_generation, markdown_writer, file_writer]
+  tools: [filesystem:read, filesystem:write]
+  entry_type: cli
+inputs_contract:
+  args: [--yaml, --input, --run_id]
+execution_contract:
+  timeout_sec: 300
+  success_criteria:
+    - "runs/{run_id}/SPEC.md が生成される"
+    - "SPEC.md に目的/非目標/データモデル/フローが含まれる"
+scaffold:
+  language: python
+  template: templates/agent/python_cli
+  files:
+    - agents/agent_create_spec_document/main.py
+    - agents/agent_create_spec_document/agent.yml
+validation:
+  smoke:
+    - "agent_cli --yaml intents/create_spec_document.yml --input 'テスト' --run_id test"
+  dry_run_ok: true
+registration:
+  version: 0.1.0
+  tags: [spec_generation, writer]
+

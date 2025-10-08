@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import sys
+import glob
+import subprocess
+import time
+import uuid
+
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+from yaml_min import load as yaml_load  # minimal loader
+
+
+def find_intents(intents_dir):
+    return sorted(glob.glob(os.path.join(intents_dir, '*.yml'))) + sorted(glob.glob(os.path.join(intents_dir, '*.yaml')))
+
+
+def score_intent(user_text, intent):
+    # naive scoring: count of keywords from description+steps present in user_text
+    text = (intent.get('description') or '') + ' ' + ' '.join(intent.get('steps') or [])
+    # include intent_id hints
+    text += ' ' + (intent.get('intent_id') or '')
+    user = user_text
+    # simple keywords split by non-word; for Japanese, also check substrings of key tokens
+    tokens = set([t for t in [w.strip() for w in text.replace('\n', ' ').split(' ')] if t])
+    if not tokens:
+        return 0.0
+    hits = 0
+    for t in tokens:
+        if t and t in user:
+            hits += 1
+    return hits / max(1, len(tokens))
+
+
+def ensure_dir(path):
+    os.makedirs(path, exist_ok=True)
+
+
+def select_agent(agent_requirements, agents_root):
+    # walk agents/*/agent.yml
+    for yml in glob.glob(os.path.join(agents_root, '*', 'agent.yml')):
+        try:
+            spec = yaml_load(yml)
+        except Exception:
+            continue
+        caps = spec.get('capabilities') or []
+        if all(req in caps for req in (agent_requirements or [])):
+            return yml, spec
+    return None, None
+
+
+def main():
+    parser = argparse.ArgumentParser(description='AGI Egg MVP Runner')
+    sub = parser.add_subparsers(dest='cmd')
+    runp = sub.add_parser('run', help='Run with user request')
+    runp.add_argument('request', help='User request text')
+    runp.add_argument('--dry-run', action='store_true')
+    runp.add_argument('--force-new-yaml', action='store_true')
+    runp.add_argument('--agent', help='Force agent id', default=None)
+    # Default ON; provide opt-out flag for power users
+    runp.add_argument('--allow-agent-gen', action='store_true', default=True)
+    runp.add_argument('--no-agent-gen', action='store_true', default=False)
+    runp.add_argument('--max-recursion', type=int, default=1)
+
+    args = parser.parse_args()
+    if args.cmd != 'run':
+        parser.print_help()
+        return 1
+
+    cwd = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    intents_dir = os.path.join(cwd, 'intents')
+    agents_root = os.path.join(cwd, 'agents')
+    blueprints_dir = os.path.join(cwd, 'blueprints')
+    runs_root = os.path.join(cwd, 'runs')
+
+    # Find/select intent
+    intents = find_intents(intents_dir)
+    selected_intent_path = None
+    selected_intent = None
+    best_score = -1.0
+    for p in intents:
+        try:
+            y = yaml_load(p)
+        except Exception:
+            continue
+        sc = score_intent(args.request, y)
+        if sc > best_score:
+            best_score = sc
+            selected_intent_path = p
+            selected_intent = y
+
+    # Prefer demo generation for typical inputs（仕様でもデモ優先）
+    req_text = args.request
+    demo_pref = any(k in req_text for k in ['デモ', 'モック', 'prototype', 'プロトタイプ', 'UI', '画面', '仕様', 'spec'])
+    demo_yaml = os.path.join(intents_dir, 'create_demo_app.yml')
+    if demo_pref and os.path.exists(demo_yaml):
+        selected_intent_path = demo_yaml
+        selected_intent = yaml_load(demo_yaml)
+    elif best_score < 0.15:
+        # fallback to demo by default if low confidence
+        if os.path.exists(demo_yaml):
+            selected_intent_path = demo_yaml
+            selected_intent = yaml_load(demo_yaml)
+
+    if not selected_intent:
+        print('No intent found and generator not implemented for generic cases.', file=sys.stderr)
+        return 2
+
+    # Select or synthesize agent
+    reqs = selected_intent.get('agent_requirements') or []
+    agent_yml_path, agent_spec = select_agent(reqs, agents_root)
+
+    allow_agent_gen = (False if args.no_agent_gen else args.allow_agent_gen)
+    if not agent_spec and allow_agent_gen and args.max_recursion > 0:
+        # Try blueprint matching the intent
+        intent_id = selected_intent.get('intent_id')
+        bp_name = f'create_agent_for_{intent_id}.yml'
+        bp_path = os.path.join(blueprints_dir, bp_name)
+        if os.path.exists(bp_path):
+            print(f"No matching agent found. Building from blueprint {bp_name}...")
+            # invoke agent_builder_cli
+            builder = os.path.join(cwd, 'bin', 'agent_builder_cli')
+            res = subprocess.run([sys.executable, builder, '--blueprint', bp_path], cwd=cwd)
+            if res.returncode != 0:
+                print('Agent builder failed.', file=sys.stderr)
+                return 3
+            # re-scan
+            agent_yml_path, agent_spec = select_agent(reqs, agents_root)
+        else:
+            print('No blueprint available; cannot synthesize agent.', file=sys.stderr)
+
+    if not agent_spec:
+        print('No suitable agent found. Using default agent_cli.', file=sys.stderr)
+        agent_yml_path = None
+        agent_spec = { 'agent_id': 'default' }
+
+    print(f"Intent: {selected_intent.get('intent_id')} ({os.path.basename(selected_intent_path)})")
+    if agent_yml_path:
+        print(f"Agent:  {agent_spec.get('agent_id')} ({os.path.basename(agent_yml_path)})")
+    else:
+        print("Agent:  agent_cli (default)")
+    if args.dry_run:
+        print('Dry-run: selection only.')
+        return 0
+
+    # Prepare run (skip any filesystem writes during dry-run)
+    ensure_dir(runs_root)
+    run_id = time.strftime('%Y%m%dT%H%M%S') + '_' + str(uuid.uuid4())[:8]
+    run_dir = os.path.join(runs_root, run_id)
+    ensure_dir(run_dir)
+
+    # Execute agent
+    agent_cli = os.path.join(cwd, 'bin', 'agent_cli')
+    cmd = [sys.executable, agent_cli, '--yaml', selected_intent_path, '--input', args.request, '--run_id', run_id]
+    # For spec generation intent, request detailed output for higher granularity
+    if (selected_intent.get('intent_id') or '').strip() == 'create_spec_document':
+        cmd += ['--style', 'detailed']
+    r = subprocess.run(cmd, cwd=cwd)
+    if r.returncode != 0:
+        print('Agent execution failed.', file=sys.stderr)
+        return 5
+
+    # Evaluate success (simple)
+    outputs = selected_intent.get('outputs') or []
+    out_path = None
+    if outputs:
+        first = outputs[0]
+        if isinstance(first, dict) and 'path' in first:
+            out_path = first['path'].replace('{run_id}', run_id)
+    if out_path:
+        out_abs = os.path.join(cwd, out_path)
+        ok = os.path.exists(out_abs)
+        # simple content checks for Japanese sections
+        if ok:
+            try:
+                with open(out_abs, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                crits = selected_intent.get('success_criteria') or []
+                # Heuristic: check presence of key sections and simple table headers
+                need_tokens = []
+                for c in crits:
+                    for t in ['目的', '非目標', '機能一覧', 'ユースケース', '画面要件', 'API 仕様', 'データモデル', '受入条件']:
+                        if t in c and t not in need_tokens:
+                            need_tokens.append(t)
+                for t in need_tokens:
+                    if (f'## {t}' not in content) and (t not in content):
+                        ok = False
+                        break
+                if ok and 'API 仕様' in need_tokens:
+                    if ('| Method |' not in content) or ('| Path |' not in content):
+                        ok = False
+            except Exception:
+                ok = False
+        if ok:
+            print(f"Success. Artifact: {out_path}")
+            return 0
+        else:
+            print('Success criteria not met.', file=sys.stderr)
+            return 6
+    else:
+        print('No outputs specified to verify.')
+        return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

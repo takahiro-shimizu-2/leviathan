@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import sys
+import json
+
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+from yaml_min import load as yaml_load  # minimal YAML loader
+from agi_poc.runner import prepare_run_dir, persist_specs  # type: ignore
+from agi_poc.util import project_root  # type: ignore
+from agi_poc.registry import agent_registry  # type: ignore
+
+
+def _project_root() -> str:
+    return project_root(os.path.dirname(__file__))
+
+
+def _ensure_dir(p: str) -> None:
+    os.makedirs(p, exist_ok=True)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description='Planning Orchestrator CLI')
+    ap.add_argument('--intent_yaml', required=True, help='Path to intent YAML')
+    ap.add_argument('--user_input', default='', help='Original user request')
+    ap.add_argument('--run_id', required=True, help='Run identifier')
+    args = ap.parse_args()
+
+    root = _project_root()
+    intent_path = args.intent_yaml
+    if not os.path.isabs(intent_path):
+        intent_path = os.path.join(root, intent_path)
+    try:
+        intent_spec = yaml_load(intent_path)
+    except Exception as e:
+        print(f"Failed to load intent YAML: {e}", file=sys.stderr)
+        return 2
+
+    intent_id = (intent_spec.get('intent_id') or os.path.splitext(os.path.basename(intent_path))[0]).strip()
+    required_caps = intent_spec.get('agent_requirements') or []
+
+    # Select or generate agent spec
+    agent_path, agent_spec = agent_registry.select_or_generate(required_caps, intent_id)
+
+    # Persist snapshot under runs/<run_id>
+    run_dir = os.path.join(root, 'runs', args.run_id)
+    _ensure_dir(run_dir)
+    try:
+        persist_specs(run_dir, intent_spec, agent_spec)
+    except Exception:
+        # Non-fatal: continue
+        pass
+
+    # Save a minimal plan.json for downstream execution
+    plan = {
+        'intent_id': intent_id,
+        'user_input': args.user_input,
+        'selected_agent': {
+            'agent_id': agent_spec.get('agent_id'),
+            'path': os.path.relpath(agent_path, root),
+            'capabilities': agent_spec.get('capabilities') or [],
+        },
+        'timeout_s': intent_spec.get('timeout_s') or 60,
+        'outputs': intent_spec.get('outputs') or [],
+    }
+    plan_path = os.path.join(run_dir, 'plan.json')
+    with open(plan_path, 'w', encoding='utf-8') as f:
+        json.dump(plan, f, ensure_ascii=False, indent=2)
+
+    # Print path for convenience
+    rel = os.path.relpath(plan_path, root)
+    print(rel)
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
+
